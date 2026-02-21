@@ -2,4 +2,6 @@
 .vscode/
 .DS_Store
 local.env
-release-artifacts/**/*.bin
+release-artifacts/
+vendor/
+lib/Arduino_GFX-master/

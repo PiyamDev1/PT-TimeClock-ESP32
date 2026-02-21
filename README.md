@@ -4,11 +4,18 @@ Portrait LVGL timeclock with swipeable tabs, provisioning flow, signed QR codes,
 
 ## Quick start
 
+0) Bootstrap local tooling and dependencies:
+	- `./scripts/setup_environment.sh`
 1) Update pins in include/pins.h for your panel and touch controller (ESP32-8048S050C is prefilled).
 2) Set API base URL in include/secrets.h.
 3) Build and flash using PlatformIO.
 
 If `pio` is not in your shell path, use `~/.local/bin/pio`.
+
+Repository size notes:
+
+- Heavy/generated assets are intentionally not tracked (`vendor/`, `release-artifacts/`, local build folders).
+- PlatformIO will download libraries into local cache/workspace during setup/build.
 
 USB flashing note:
 

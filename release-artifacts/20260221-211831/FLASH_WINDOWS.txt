@@ -1,8 +1,0 @@
-Easy flash (Windows, COM5):
-
-Option A - esptool command (single file):
-python -m esptool --chip esp32s3 --port COM5 --baud 460800 write_flash 0x0 fullflash.bin
-
-Option B - Espressif Flash Download Tool:
-- Select fullflash.bin at address 0x0
-- Select COM5 and flash
