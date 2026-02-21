@@ -80,7 +80,7 @@ bool http_get_json(const String& url, String& response) {
     return code >= 200 && code < 300;
 }
 
-void handle_register(DeviceConfig& config) {
+void handle_register(DeviceConfig& config, AppState& state) {
     if (config.device_id.length() == 0) {
         uint8_t mac[6] = {0};
         WiFi.macAddress(mac);
@@ -114,12 +114,17 @@ void handle_register(DeviceConfig& config) {
     config.location_id = String(res["location_id"] | "");
     config.location_name = String(res["location_name"] | "");
     config.qr_interval_sec = res["qr_interval_sec"] | kDefaultQrIntervalSec;
+    bool active = res["is_active"] | true;
+    if (state.device_active != active) {
+        state.device_active = active;
+        service_storage_save_device_active(active);
+    }
 
     service_storage_save_config(config);
     service_log_add("Device registered");
 }
 
-void handle_config(DeviceConfig& config) {
+void handle_config(DeviceConfig& config, AppState& state) {
     String response;
     String url = build_url("/api/timeclock/devices/config?device_id=") + config.device_id;
     if (!http_get_json(url, response)) {
@@ -136,6 +141,12 @@ void handle_config(DeviceConfig& config) {
     config.location_id = String(res["location_id"] | config.location_id);
     config.location_name = String(res["location_name"] | config.location_name);
     config.qr_interval_sec = res["qr_interval_sec"] | config.qr_interval_sec;
+    bool active = res["is_active"] | state.device_active;
+    if (state.device_active != active) {
+        state.device_active = active;
+        service_storage_save_device_active(active);
+        service_log_add(active ? "Device active" : "Device inactive");
+    }
     service_storage_save_config(config);
 }
 
@@ -213,7 +224,7 @@ void service_http_tick(DeviceConfig& config, AppState& state) {
     }
 
     if (!state.provisioning_complete) {
-        handle_register(config);
+        handle_register(config, state);
         state.provisioning_complete = config.device_secret.length() > 0;
         return;
     }
@@ -221,7 +232,7 @@ void service_http_tick(DeviceConfig& config, AppState& state) {
     uint32_t now = millis();
     if (now - g_last_config_ms > kConfigIntervalMs) {
         g_last_config_ms = now;
-        handle_config(config);
+        handle_config(config, state);
     }
 
     if (g_force_notice || (now - g_last_notice_ms > kNoticeIntervalMs)) {

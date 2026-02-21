@@ -1,9 +1,8 @@
 #include "display_driver.h"
 
 #include <Arduino.h>
-#include <esp_lcd_panel_rgb.h>
-#include <esp_lcd_panel_ops.h>
 #include <esp_heap_caps.h>
+#include <Arduino_GFX_Library.h>
 
 #include "pins.h"
 
@@ -13,47 +12,47 @@ namespace {
 
 constexpr int kHorRes = 800;
 constexpr int kVerRes = 480;
-constexpr int kPclkHz = 16000000;
-constexpr int kHsyncBackPorch = 88;
-constexpr int kHsyncFrontPorch = 40;
-constexpr int kHsyncPulseWidth = 40;
-constexpr int kVsyncBackPorch = 23;
-constexpr int kVsyncFrontPorch = 5;
-constexpr int kVsyncPulseWidth = 5;
+constexpr int kPclkHz = 15000000;
+constexpr int kHsyncPolarity = 0;
+constexpr int kHsyncBackPorch = 8;
+constexpr int kHsyncFrontPorch = 8;
+constexpr int kHsyncPulseWidth = 4;
+constexpr int kVsyncPolarity = 0;
+constexpr int kVsyncBackPorch = 8;
+constexpr int kVsyncFrontPorch = 8;
+constexpr int kVsyncPulseWidth = 4;
+constexpr int kPclkActiveNeg = 1;
+constexpr int kNoPsramBufferLines = 30;
+constexpr uint8_t kBacklightDutyOn = 255;
+constexpr uint8_t kBacklightDutyDim = 48;
 
-const int kDataGpios[16] = {
-    pins::kLcdB0,
-    pins::kLcdB1,
-    pins::kLcdB2,
-    pins::kLcdB3,
-    pins::kLcdB4,
-    pins::kLcdG0,
-    pins::kLcdG1,
-    pins::kLcdG2,
-    pins::kLcdG3,
-    pins::kLcdG4,
-    pins::kLcdG5,
-    pins::kLcdR0,
-    pins::kLcdR1,
-    pins::kLcdR2,
-    pins::kLcdR3,
-    pins::kLcdR4,
-};
+Arduino_ESP32RGBPanel* g_bus = nullptr;
+Arduino_RPi_DPI_RGBPanel* g_gfx = nullptr;
+bool g_backlight_on = false;
+bool g_backlight_dimmed = false;
 
-esp_lcd_panel_handle_t g_panel = nullptr;
+void apply_backlight_duty(uint8_t duty) {
+    pinMode(pins::kLcdBl, OUTPUT);
+    digitalWrite(pins::kLcdBl, duty > 0 ? HIGH : LOW);
+}
 
 void display_flush_cb(lv_disp_drv_t* disp, const lv_area_t* area, lv_color_t* color_p) {
-    if (!g_panel) {
+    if (!g_gfx) {
         lv_disp_flush_ready(disp);
         return;
     }
 
-    esp_lcd_panel_draw_bitmap(g_panel,
-        area->x1,
-        area->y1,
-        area->x2 + 1,
-        area->y2 + 1,
-        color_p);
+    uint32_t w = area->x2 - area->x1 + 1;
+    uint32_t h = area->y2 - area->y1 + 1;
+
+#if (LV_COLOR_16_SWAP != 0)
+    g_gfx->draw16bitBeRGBBitmap(area->x1, area->y1, reinterpret_cast<uint16_t*>(&color_p->full), w, h);
+#else
+    g_gfx->draw16bitRGBBitmap(area->x1, area->y1, reinterpret_cast<uint16_t*>(&color_p->full), w, h);
+#endif
+
+    g_gfx->flush();
+
     lv_disp_flush_ready(disp);
 }
 
@@ -62,64 +61,107 @@ void display_flush_cb(lv_disp_drv_t* disp, const lv_area_t* area, lv_color_t* co
 bool display_driver_init(lv_disp_t** out_disp) {
     static lv_disp_draw_buf_t draw_buf;
     static lv_disp_drv_t disp_drv;
+    static lv_color_t* lv_draw_buf = nullptr;
 
-    lv_color_t* fb = static_cast<lv_color_t*>(heap_caps_malloc(
-        kHorRes * kVerRes * sizeof(lv_color_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-    if (!fb) {
+    Serial.println("display_driver_init: start");
+
+    g_bus = new Arduino_ESP32RGBPanel(
+        GFX_NOT_DEFINED, GFX_NOT_DEFINED, GFX_NOT_DEFINED,
+        pins::kLcdDe, pins::kLcdVsync, pins::kLcdHsync, pins::kLcdPclk,
+        pins::kLcdR0, pins::kLcdR1, pins::kLcdR2, pins::kLcdR3, pins::kLcdR4,
+        pins::kLcdG0, pins::kLcdG1, pins::kLcdG2, pins::kLcdG3, pins::kLcdG4, pins::kLcdG5,
+        pins::kLcdB0, pins::kLcdB1, pins::kLcdB2, pins::kLcdB3, pins::kLcdB4);
+
+    g_gfx = new Arduino_RPi_DPI_RGBPanel(
+        g_bus,
+        kHorRes, kHsyncPolarity, kHsyncFrontPorch, kHsyncPulseWidth, kHsyncBackPorch,
+        kVerRes, kVsyncPolarity, kVsyncFrontPorch, kVsyncPulseWidth, kVsyncBackPorch,
+        kPclkActiveNeg, kPclkHz, false);
+
+    if (!g_gfx) {
+        Serial.println("display_driver_init: panel alloc failed");
         return false;
     }
 
-    esp_lcd_rgb_panel_config_t panel_config = {};
-    panel_config.clk_src = LCD_CLK_SRC_PLL160M;
-    panel_config.timings.pclk_hz = kPclkHz;
-    panel_config.timings.h_res = kHorRes;
-    panel_config.timings.v_res = kVerRes;
-    panel_config.timings.hsync_back_porch = kHsyncBackPorch;
-    panel_config.timings.hsync_front_porch = kHsyncFrontPorch;
-    panel_config.timings.hsync_pulse_width = kHsyncPulseWidth;
-    panel_config.timings.vsync_back_porch = kVsyncBackPorch;
-    panel_config.timings.vsync_front_porch = kVsyncFrontPorch;
-    panel_config.timings.vsync_pulse_width = kVsyncPulseWidth;
-    panel_config.timings.flags.pclk_active_neg = false;
-    panel_config.timings.flags.hsync_idle_low = false;
-    panel_config.timings.flags.vsync_idle_low = false;
-    panel_config.data_width = 16;
-    panel_config.psram_trans_align = 64;
-    panel_config.flags.fb_in_psram = 1;
-    for (int i = 0; i < 16; ++i) {
-        panel_config.data_gpio_nums[i] = kDataGpios[i];
-    }
-    panel_config.de_gpio_num = pins::kLcdDe;
-    panel_config.disp_gpio_num = -1;
-    panel_config.pclk_gpio_num = pins::kLcdPclk;
-    panel_config.vsync_gpio_num = pins::kLcdVsync;
-    panel_config.hsync_gpio_num = pins::kLcdHsync;
+    g_gfx->begin();
 
-    if (esp_lcd_new_rgb_panel(&panel_config, &g_panel) != ESP_OK) {
+    if (!g_gfx->getFramebuffer()) {
+        Serial.println("display_driver_init: Arduino_GFX begin failed");
         return false;
     }
 
-    if (esp_lcd_panel_init(g_panel) != ESP_OK) {
+    g_gfx->fillScreen(BLACK);
+
+    lv_draw_buf = static_cast<lv_color_t*>(heap_caps_malloc(
+        kHorRes * kNoPsramBufferLines * sizeof(lv_color_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA | MALLOC_CAP_8BIT));
+    size_t lv_buf_pixels = kHorRes * kNoPsramBufferLines;
+    if (!lv_draw_buf) {
+        Serial.println("display_driver_init: draw buffer alloc failed");
         return false;
     }
 
-    pinMode(pins::kLcdBl, OUTPUT);
-    digitalWrite(pins::kLcdBl, HIGH);
+    display_driver_set_backlight(true);
 
-    lv_disp_draw_buf_init(&draw_buf, fb, nullptr, kHorRes * kVerRes);
+    lv_disp_draw_buf_init(&draw_buf, lv_draw_buf, nullptr, lv_buf_pixels);
     lv_disp_drv_init(&disp_drv);
     disp_drv.hor_res = kHorRes;
     disp_drv.ver_res = kVerRes;
     disp_drv.flush_cb = display_flush_cb;
     disp_drv.draw_buf = &draw_buf;
-    disp_drv.full_refresh = 1;
+    disp_drv.sw_rotate = 1;
+    disp_drv.full_refresh = 0;
 
     lv_disp_t* disp = lv_disp_drv_register(&disp_drv);
+    Serial.println("display_driver_init: ready (backend=Arduino_GFX)");
     if (out_disp) {
         *out_disp = disp;
     }
 
     return true;
+}
+
+void display_driver_show_test_pattern() {
+    if (!g_gfx) {
+        Serial.println("display_driver_test: panel not ready");
+        return;
+    }
+
+    g_gfx->fillScreen(RED);
+    Serial.println("display_driver_test: RED");
+    delay(700);
+    g_gfx->fillScreen(GREEN);
+    Serial.println("display_driver_test: GREEN");
+    delay(700);
+    g_gfx->fillScreen(BLUE);
+    Serial.println("display_driver_test: BLUE");
+    delay(700);
+    g_gfx->fillScreen(BLACK);
+    Serial.println("display_driver_test: BLACK");
+    delay(300);
+}
+
+void display_driver_set_backlight(bool on) {
+    g_backlight_on = on;
+    g_backlight_dimmed = false;
+    apply_backlight_duty(on ? kBacklightDutyOn : 0);
+}
+
+bool display_driver_is_backlight_on() {
+    return g_backlight_on;
+}
+
+void display_driver_set_backlight_dimmed(bool dimmed) {
+    if (!g_backlight_on) {
+        g_backlight_dimmed = false;
+        return;
+    }
+
+    g_backlight_dimmed = dimmed;
+    apply_backlight_duty(dimmed ? kBacklightDutyDim : kBacklightDutyOn);
+}
+
+bool display_driver_is_backlight_dimmed() {
+    return g_backlight_dimmed;
 }
 
 } // namespace ptc

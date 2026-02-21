@@ -21,6 +21,7 @@ String g_hostname;
 bool g_requested = false;
 bool g_update_available = false;
 bool g_update_ready = false;
+bool g_reboot_required = false;
 String g_latest_version;
 String g_latest_asset_url;
 String g_github_status = "Idle";
@@ -49,10 +50,6 @@ bool github_get_latest_release(String& out_version, String& out_asset_url) {
         g_last_error = "GitHub repo not set";
         return false;
     }
-    if (!github_token_valid()) {
-        g_last_error = "GitHub token missing";
-        return false;
-    }
     if (!service_wifi_is_connected()) {
         g_last_error = "Wi-Fi offline";
         return false;
@@ -67,7 +64,9 @@ bool github_get_latest_release(String& out_version, String& out_asset_url) {
         return false;
     }
     http.addHeader("User-Agent", "ptc-esp32");
-    http.addHeader("Authorization", String("token ") + secrets::kGithubToken);
+    if (github_token_valid()) {
+        http.addHeader("Authorization", String("token ") + secrets::kGithubToken);
+    }
     http.addHeader("Accept", "application/vnd.github+json");
     int code = http.GET();
     String response;
@@ -76,7 +75,11 @@ bool github_get_latest_release(String& out_version, String& out_asset_url) {
     }
     http.end();
     if (code < 200 || code >= 300) {
-        g_last_error = "GitHub API failed";
+        if ((code == 401 || code == 403 || code == 404) && !github_token_valid()) {
+            g_last_error = "GitHub token required for private repo";
+        } else {
+            g_last_error = String("GitHub API failed (") + code + ")";
+        }
         return false;
     }
 
@@ -91,7 +94,11 @@ bool github_get_latest_release(String& out_version, String& out_asset_url) {
     for (JsonObject asset : doc["assets"].as<JsonArray>()) {
         String name = String(asset["name"] | "");
         if (name == kFirmwareAssetName) {
-            out_asset_url = String(asset["url"] | "");
+            if (github_token_valid()) {
+                out_asset_url = String(asset["url"] | "");
+            } else {
+                out_asset_url = String(asset["browser_download_url"] | "");
+            }
             break;
         }
     }
@@ -107,10 +114,6 @@ bool github_get_latest_release(String& out_version, String& out_asset_url) {
 }
 
 bool github_download_asset(const String& asset_url) {
-    if (!github_token_valid()) {
-        g_last_error = "GitHub token missing";
-        return false;
-    }
     if (!service_wifi_is_connected()) {
         g_last_error = "Wi-Fi offline";
         return false;
@@ -124,12 +127,18 @@ bool github_download_asset(const String& asset_url) {
         return false;
     }
     http.addHeader("User-Agent", "ptc-esp32");
-    http.addHeader("Authorization", String("token ") + secrets::kGithubToken);
-    http.addHeader("Accept", "application/octet-stream");
+    if (asset_url.startsWith("https://api.github.com/") && github_token_valid()) {
+        http.addHeader("Authorization", String("token ") + secrets::kGithubToken);
+        http.addHeader("Accept", "application/octet-stream");
+    }
     int code = http.GET();
     if (code < 200 || code >= 300) {
         http.end();
-        g_last_error = "Asset download failed";
+        if ((code == 401 || code == 403 || code == 404) && !github_token_valid()) {
+            g_last_error = "GitHub token required for private repo";
+        } else {
+            g_last_error = String("Asset download failed (") + code + ")";
+        }
         return false;
     }
 
@@ -232,11 +241,42 @@ void service_ota_download_github() {
         return;
     }
     g_update_ready = true;
-    g_github_status = "Update ready";
+    g_reboot_required = true;
+    g_github_status = "Installed. Reboot when ready";
+}
+
+void service_ota_install_latest_github() {
+    g_github_status = "Checking...";
+    g_last_error = "";
+    String version;
+    String asset_url;
+    if (!github_get_latest_release(version, asset_url)) {
+        g_github_status = String("Error: ") + g_last_error;
+        return;
+    }
+
+    g_latest_version = version;
+    g_latest_asset_url = asset_url;
+    if (g_latest_version == kFirmwareVersion) {
+        g_update_available = false;
+        g_github_status = "Up to date";
+        return;
+    }
+
+    g_update_available = true;
+    g_github_status = String("Installing ") + g_latest_version + "...";
+    if (!github_download_asset(g_latest_asset_url)) {
+        g_github_status = String("Error: ") + g_last_error;
+        return;
+    }
+
+    g_update_ready = true;
+    g_reboot_required = true;
+    g_github_status = String("Installed ") + g_latest_version + ". Reboot when ready";
 }
 
 void service_ota_apply_update() {
-    if (g_update_ready) {
+    if (g_reboot_required || g_update_ready) {
         ESP.restart();
     }
 }
@@ -247,6 +287,10 @@ bool service_ota_update_available() {
 
 bool service_ota_update_ready() {
     return g_update_ready;
+}
+
+bool service_ota_reboot_required() {
+    return g_reboot_required;
 }
 
 String service_ota_github_status() {

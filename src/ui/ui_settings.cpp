@@ -4,6 +4,7 @@
 #include "services/service_wifi.h"
 #include "services/service_http.h"
 #include "services/service_ota.h"
+#include "drivers/touch_driver.h"
 
 #include <Arduino.h>
 
@@ -17,6 +18,7 @@ struct RotationContext {
 };
 
 struct SettingsUi {
+    lv_obj_t* device_value = nullptr;
     lv_obj_t* wifi_value = nullptr;
     lv_obj_t* api_value = nullptr;
     lv_obj_t* ota_value = nullptr;
@@ -26,7 +28,96 @@ struct SettingsUi {
     lv_obj_t* github_download_button = nullptr;
     lv_obj_t* github_apply_button = nullptr;
     lv_obj_t* toast = nullptr;
+    AppState* state = nullptr;
+
+    lv_obj_t* calib_overlay = nullptr;
+    lv_obj_t* calib_target = nullptr;
+    lv_obj_t* calib_hint = nullptr;
+    lv_timer_t* calib_timer = nullptr;
+    uint8_t calib_step = 0;
+    bool calib_touch_held = false;
+    uint16_t calib_raw_x[2] = {0, 0};
+    uint16_t calib_raw_y[2] = {0, 0};
 };
+
+void calibration_update_target(SettingsUi& ui) {
+    if (!ui.calib_target || !ui.calib_hint) {
+        return;
+    }
+
+    lv_disp_t* disp = lv_disp_get_default();
+    int32_t w = disp ? lv_disp_get_hor_res(disp) : 480;
+    int32_t h = disp ? lv_disp_get_ver_res(disp) : 800;
+    int32_t margin = 36;
+
+    int32_t tx = (ui.calib_step == 0) ? margin : (w - margin);
+    int32_t ty = (ui.calib_step == 0) ? margin : (h - margin);
+    lv_obj_set_pos(ui.calib_target, tx - 14, ty - 14);
+
+    if (ui.calib_step == 0) {
+        lv_label_set_text(ui.calib_hint, "Tap the top-left X");
+    } else {
+        lv_label_set_text(ui.calib_hint, "Tap the bottom-right X");
+    }
+}
+
+void calibration_finish(SettingsUi& ui) {
+    TouchCalibration calibration;
+    calibration.raw_min_x = min(ui.calib_raw_x[0], ui.calib_raw_x[1]);
+    calibration.raw_max_x = max(ui.calib_raw_x[0], ui.calib_raw_x[1]);
+    calibration.raw_min_y = min(ui.calib_raw_y[0], ui.calib_raw_y[1]);
+    calibration.raw_max_y = max(ui.calib_raw_y[0], ui.calib_raw_y[1]);
+    calibration.invert_x = ui.calib_raw_x[0] > ui.calib_raw_x[1];
+    calibration.invert_y = ui.calib_raw_y[0] > ui.calib_raw_y[1];
+    calibration.valid = true;
+
+    touch_driver_set_calibration(calibration);
+    service_storage_save_touch_calibration(calibration);
+
+    if (ui.toast) {
+        lv_label_set_text(ui.toast, "Touch calibrated");
+        lv_obj_clear_flag(ui.toast, LV_OBJ_FLAG_HIDDEN);
+        lv_timer_create([](lv_timer_t* timer) {
+            auto* label = static_cast<lv_obj_t*>(timer->user_data);
+            lv_obj_add_flag(label, LV_OBJ_FLAG_HIDDEN);
+            lv_timer_del(timer);
+        }, 1500, ui.toast);
+    }
+
+    if (ui.calib_overlay) {
+        lv_obj_add_flag(ui.calib_overlay, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+void calibration_timer_cb(lv_timer_t* timer) {
+    auto* ui = static_cast<SettingsUi*>(timer->user_data);
+    if (!ui || !ui->calib_overlay || lv_obj_has_flag(ui->calib_overlay, LV_OBJ_FLAG_HIDDEN)) {
+        return;
+    }
+
+    uint16_t x = 0;
+    uint16_t y = 0;
+    bool pressed = false;
+    if (!touch_driver_poll_raw(x, y, pressed)) {
+        return;
+    }
+
+    if (pressed && !ui->calib_touch_held) {
+        ui->calib_touch_held = true;
+        ui->calib_raw_x[ui->calib_step] = x;
+        ui->calib_raw_y[ui->calib_step] = y;
+    }
+
+    if (!pressed && ui->calib_touch_held) {
+        ui->calib_touch_held = false;
+        if (ui->calib_step == 0) {
+            ui->calib_step = 1;
+            calibration_update_target(*ui);
+        } else {
+            calibration_finish(*ui);
+        }
+    }
+}
 
 lv_disp_rot_t rotation_to_lv(uint16_t degrees) {
     switch (degrees) {
@@ -147,10 +238,14 @@ void ui_settings_build(lv_obj_t* parent, DeviceConfig& config, AppState& state) 
     const char* location = config.location_name.length() ? config.location_name.c_str() : "Not assigned";
 
     static SettingsUi ui;
+    ui.state = &state;
 
     create_field(parent, "Device ID", device_id);
     create_field(parent, "Location", location);
     create_field(parent, "Secret", mask_secret(config.device_secret).c_str());
+
+    lv_obj_t* device_row = create_field(parent, "Device status", state.device_active ? "Active" : "Inactive");
+    ui.device_value = lv_obj_get_child(device_row, 1);
 
     lv_obj_t* wifi_row = create_field(parent, "Wi-Fi status", state.wifi_connected ? "Online" : "Offline");
     ui.wifi_value = lv_obj_get_child(wifi_row, 1);
@@ -268,21 +363,25 @@ void ui_settings_build(lv_obj_t* parent, DeviceConfig& config, AppState& state) 
     lv_obj_t* github_row = create_field(parent, "GitHub update", "Idle");
     ui.github_value = lv_obj_get_child(github_row, 1);
 
-    ui.github_check_button = create_action(parent, LV_SYMBOL_REFRESH " Check GitHub update");
+    ui.github_check_button = create_action(parent, LV_SYMBOL_REFRESH " Install latest GitHub update");
     lv_obj_add_event_cb(ui.github_check_button, [](lv_event_t*) {
-        service_ota_check_github();
+        service_ota_install_latest_github();
     }, LV_EVENT_CLICKED, nullptr);
 
-    ui.github_download_button = create_action(parent, LV_SYMBOL_DOWNLOAD " Download update");
+    ui.github_download_button = create_action(parent, LV_SYMBOL_DOWNLOAD " Download update (advanced)");
     lv_obj_add_event_cb(ui.github_download_button, [](lv_event_t*) {
+        service_ota_check_github();
         service_ota_download_github();
     }, LV_EVENT_CLICKED, nullptr);
+    lv_obj_add_flag(ui.github_download_button, LV_OBJ_FLAG_HIDDEN);
 
-    ui.github_apply_button = create_action(parent, LV_SYMBOL_WARNING " Reboot to apply");
+    ui.github_apply_button = create_action(parent, LV_SYMBOL_WARNING " Reboot to finish update");
     lv_obj_add_event_cb(ui.github_apply_button, [](lv_event_t*) {
         service_ota_apply_update();
     }, LV_EVENT_CLICKED, nullptr);
     lv_obj_add_flag(ui.github_apply_button, LV_OBJ_FLAG_HIDDEN);
+
+    lv_obj_t* calibrate_btn = create_action(parent, LV_SYMBOL_EDIT " Calibrate touch");
 
     ui.toast = lv_label_create(parent);
     lv_label_set_text(ui.toast, "Saved");
@@ -295,6 +394,37 @@ void ui_settings_build(lv_obj_t* parent, DeviceConfig& config, AppState& state) 
     lv_obj_add_flag(ui.toast, LV_OBJ_FLAG_HIDDEN);
 
     rotation_ctx.toast = ui.toast;
+
+    ui.calib_overlay = lv_obj_create(lv_scr_act());
+    lv_obj_set_size(ui.calib_overlay, lv_disp_get_hor_res(NULL), lv_disp_get_ver_res(NULL));
+    lv_obj_set_style_bg_color(ui.calib_overlay, lv_color_hex(0x0A1218), 0);
+    lv_obj_set_style_bg_opa(ui.calib_overlay, LV_OPA_90, 0);
+    lv_obj_clear_flag(ui.calib_overlay, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(ui.calib_overlay, LV_OBJ_FLAG_HIDDEN);
+
+    ui.calib_hint = lv_label_create(ui.calib_overlay);
+    lv_label_set_text(ui.calib_hint, "Tap the top-left X");
+    lv_obj_align(ui.calib_hint, LV_ALIGN_TOP_MID, 0, 16);
+    lv_obj_set_style_text_color(ui.calib_hint, lv_color_hex(0xE9F5F9), 0);
+
+    ui.calib_target = lv_label_create(ui.calib_overlay);
+    lv_label_set_text(ui.calib_target, "X");
+    lv_obj_set_style_text_color(ui.calib_target, lv_color_hex(0xFF5A5A), 0);
+    lv_obj_set_style_text_font(ui.calib_target, LV_FONT_DEFAULT, 0);
+
+    ui.calib_timer = lv_timer_create(calibration_timer_cb, 30, &ui);
+
+    lv_obj_add_event_cb(calibrate_btn, [](lv_event_t* event) {
+        auto* ui_ptr = static_cast<SettingsUi*>(lv_event_get_user_data(event));
+        if (!ui_ptr || !ui_ptr->calib_overlay) {
+            return;
+        }
+
+        ui_ptr->calib_step = 0;
+        ui_ptr->calib_touch_held = false;
+        lv_obj_clear_flag(ui_ptr->calib_overlay, LV_OBJ_FLAG_HIDDEN);
+        calibration_update_target(*ui_ptr);
+    }, LV_EVENT_CLICKED, &ui);
 
     lv_obj_t* revoke_btn = create_action(parent, LV_SYMBOL_WARNING " Revoke device");
     lv_obj_add_event_cb(revoke_btn, [](lv_event_t*) {
@@ -311,6 +441,10 @@ void ui_settings_build(lv_obj_t* parent, DeviceConfig& config, AppState& state) 
 
         if (ui_ptr->wifi_value) {
             lv_label_set_text(ui_ptr->wifi_value, service_wifi_is_connected() ? "Online" : "Offline");
+        }
+
+        if (ui_ptr->device_value && ui_ptr->state) {
+            lv_label_set_text(ui_ptr->device_value, ui_ptr->state->device_active ? "Active" : "Inactive");
         }
 
         if (ui_ptr->api_value) {
@@ -345,7 +479,7 @@ void ui_settings_build(lv_obj_t* parent, DeviceConfig& config, AppState& state) 
         }
 
         if (ui_ptr->github_apply_button) {
-            if (service_ota_update_ready()) {
+            if (service_ota_reboot_required()) {
                 lv_obj_clear_flag(ui_ptr->github_apply_button, LV_OBJ_FLAG_HIDDEN);
             } else {
                 lv_obj_add_flag(ui_ptr->github_apply_button, LV_OBJ_FLAG_HIDDEN);

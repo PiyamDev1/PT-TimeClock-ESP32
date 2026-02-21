@@ -4,6 +4,7 @@
 #include <Wire.h>
 
 #include "pins.h"
+#include "display_driver.h"
 
 namespace ptc {
 
@@ -15,6 +16,8 @@ constexpr uint16_t kRegStatus = 0x814E;
 constexpr uint16_t kRegPoints = 0x8150;
 
 uint8_t g_addr = kGt911Addr1;
+bool g_tap_latched = false;
+TouchCalibration g_calibration;
 
 bool i2c_read(uint16_t reg, uint8_t* data, size_t len) {
     Wire.beginTransmission(g_addr);
@@ -104,15 +107,52 @@ void apply_rotation(uint16_t& x, uint16_t& y) {
     }
 }
 
+uint16_t map_axis(uint16_t raw, uint16_t raw_min, uint16_t raw_max, uint16_t out_max, bool invert) {
+    if (raw_max <= raw_min) {
+        return 0;
+    }
+
+    if (raw < raw_min) {
+        raw = raw_min;
+    }
+    if (raw > raw_max) {
+        raw = raw_max;
+    }
+
+    uint32_t span = static_cast<uint32_t>(raw_max - raw_min);
+    uint32_t rel = static_cast<uint32_t>(raw - raw_min);
+    uint32_t mapped = (rel * out_max) / span;
+    if (mapped > out_max) {
+        mapped = out_max;
+    }
+
+    if (invert) {
+        mapped = out_max - mapped;
+    }
+    return static_cast<uint16_t>(mapped);
+}
+
+uint16_t clamp_u16(int32_t value, uint16_t max_value) {
+    if (value < 0) {
+        return 0;
+    }
+    if (value > max_value) {
+        return max_value;
+    }
+    return static_cast<uint16_t>(value);
+}
+
 } // namespace
 
 bool touch_driver_init() {
     Wire.begin(pins::kTouchSda, pins::kTouchScl);
-    pinMode(pins::kTouchRst, OUTPUT);
-    digitalWrite(pins::kTouchRst, LOW);
-    delay(10);
-    digitalWrite(pins::kTouchRst, HIGH);
-    delay(50);
+    if (pins::kTouchRst >= 0) {
+        pinMode(pins::kTouchRst, OUTPUT);
+        digitalWrite(pins::kTouchRst, LOW);
+        delay(10);
+        digitalWrite(pins::kTouchRst, HIGH);
+        delay(50);
+    }
 
     return detect_addr();
 }
@@ -128,11 +168,88 @@ void touch_driver_read(lv_indev_drv_t* drv, lv_indev_data_t* data) {
         return;
     }
 
-    apply_rotation(x, y);
+    if (g_calibration.valid) {
+        lv_disp_t* disp = lv_disp_get_default();
+        uint16_t out_w = disp ? static_cast<uint16_t>(lv_disp_get_hor_res(disp)) : 480;
+        uint16_t out_h = disp ? static_cast<uint16_t>(lv_disp_get_ver_res(disp)) : 800;
+        if (out_w == 0) {
+            out_w = 1;
+        }
+        if (out_h == 0) {
+            out_h = 1;
+        }
+        int32_t mapped_x = 0;
+        int32_t mapped_y = 0;
+        if (g_calibration.use_affine) {
+            float raw_x = static_cast<float>(x);
+            float raw_y = static_cast<float>(y);
+            mapped_x = static_cast<int32_t>(
+                g_calibration.affine_xx * raw_x +
+                g_calibration.affine_xy * raw_y +
+                g_calibration.affine_x0);
+            mapped_y = static_cast<int32_t>(
+                g_calibration.affine_yx * raw_x +
+                g_calibration.affine_yy * raw_y +
+                g_calibration.affine_y0);
+        } else {
+            uint16_t source_x = g_calibration.swap_xy ? y : x;
+            uint16_t source_y = g_calibration.swap_xy ? x : y;
+            mapped_x = static_cast<int32_t>(g_calibration.scale_x * static_cast<float>(source_x) + g_calibration.offset_x);
+            mapped_y = static_cast<int32_t>(g_calibration.scale_y * static_cast<float>(source_y) + g_calibration.offset_y);
+        }
+
+        x = clamp_u16(mapped_x, static_cast<uint16_t>(out_w - 1));
+        y = clamp_u16(mapped_y, static_cast<uint16_t>(out_h - 1));
+    } else {
+        if (x >= 800) {
+            x = 799;
+        }
+        if (y >= 480) {
+            y = 479;
+        }
+    }
+
+    if (pressed) {
+        g_tap_latched = true;
+    }
+
+    if (pressed && (!display_driver_is_backlight_on() || display_driver_is_backlight_dimmed())) {
+        data->state = LV_INDEV_STATE_REL;
+        return;
+    }
+
     data->state = pressed ? LV_INDEV_STATE_PR : LV_INDEV_STATE_REL;
     data->point.x = x;
     data->point.y = y;
     return;
+}
+
+bool touch_driver_consume_tap_event() {
+    bool tapped = g_tap_latched;
+    g_tap_latched = false;
+    return tapped;
+}
+
+bool touch_driver_poll_raw(uint16_t& x, uint16_t& y, bool& pressed) {
+    bool ok = read_point(x, y, pressed);
+    if (!ok) {
+        return false;
+    }
+    if (x >= 800) {
+        x = 799;
+    }
+    if (y >= 480) {
+        y = 479;
+    }
+    return true;
+}
+
+void touch_driver_set_calibration(const TouchCalibration& calibration) {
+    g_calibration = calibration;
+}
+
+TouchCalibration touch_driver_get_calibration() {
+    return g_calibration;
 }
 
 } // namespace ptc

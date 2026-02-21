@@ -88,7 +88,9 @@ void service_qr_init() {
 }
 
 void service_qr_tick(DeviceConfig& config, AppState& state) {
-    if (!state.time_sync_ok || config.device_secret.length() == 0) {
+    if (!state.time_sync_ok || !state.device_active || config.device_secret.length() == 0) {
+        g_payload = "";
+        g_manual_code = "";
         return;
     }
 

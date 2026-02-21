@@ -31,7 +31,7 @@ static constexpr int kLcdBl = 2;
 // Touch (GT911 I2C)
 static constexpr int kTouchSda = 19;
 static constexpr int kTouchScl = 20;
-static constexpr int kTouchInt = 18;
+static constexpr int kTouchInt = -1;
 static constexpr int kTouchRst = 38;
 
 } // namespace pins
