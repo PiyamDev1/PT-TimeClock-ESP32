@@ -34,6 +34,7 @@ namespace ptc {
 
 void service_wifi_init() {
     WiFi.mode(WIFI_STA);
+    WiFi.setSleep(false);
     g_wifi_manager.setConfigPortalBlocking(false);
     g_wifi_manager.setConfigPortalTimeout(180);
 }

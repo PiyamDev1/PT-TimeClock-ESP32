@@ -12,7 +12,7 @@ namespace {
 
 constexpr int kHorRes = 800;
 constexpr int kVerRes = 480;
-constexpr int kPclkHz = 15000000;
+constexpr int kPclkHz = 16000000;
 constexpr int kHsyncPolarity = 0;
 constexpr int kHsyncBackPorch = 8;
 constexpr int kHsyncFrontPorch = 8;
@@ -22,14 +22,17 @@ constexpr int kVsyncBackPorch = 8;
 constexpr int kVsyncFrontPorch = 8;
 constexpr int kVsyncPulseWidth = 4;
 constexpr int kPclkActiveNeg = 1;
+constexpr bool kAutoFlush = true;
 constexpr int kNoPsramBufferLines = 30;
 constexpr uint8_t kBacklightDutyOn = 255;
 constexpr uint8_t kBacklightDutyDim = 48;
 
 Arduino_ESP32RGBPanel* g_bus = nullptr;
 Arduino_RPi_DPI_RGBPanel* g_gfx = nullptr;
+bool g_has_framebuffer = false;
 bool g_backlight_on = false;
 bool g_backlight_dimmed = false;
+bool g_render_enabled = true;
 
 void apply_backlight_duty(uint8_t duty) {
     pinMode(pins::kLcdBl, OUTPUT);
@@ -37,7 +40,7 @@ void apply_backlight_duty(uint8_t duty) {
 }
 
 void display_flush_cb(lv_disp_drv_t* disp, const lv_area_t* area, lv_color_t* color_p) {
-    if (!g_gfx) {
+    if (!g_gfx || !g_render_enabled) {
         lv_disp_flush_ready(disp);
         return;
     }
@@ -51,7 +54,9 @@ void display_flush_cb(lv_disp_drv_t* disp, const lv_area_t* area, lv_color_t* co
     g_gfx->draw16bitRGBBitmap(area->x1, area->y1, reinterpret_cast<uint16_t*>(&color_p->full), w, h);
 #endif
 
-    g_gfx->flush();
+    if (g_has_framebuffer && !kAutoFlush) {
+        g_gfx->flush();
+    }
 
     lv_disp_flush_ready(disp);
 }
@@ -76,7 +81,7 @@ bool display_driver_init(lv_disp_t** out_disp) {
         g_bus,
         kHorRes, kHsyncPolarity, kHsyncFrontPorch, kHsyncPulseWidth, kHsyncBackPorch,
         kVerRes, kVsyncPolarity, kVsyncFrontPorch, kVsyncPulseWidth, kVsyncBackPorch,
-        kPclkActiveNeg, kPclkHz, false);
+        kPclkActiveNeg, kPclkHz, kAutoFlush);
 
     if (!g_gfx) {
         Serial.println("display_driver_init: panel alloc failed");
@@ -85,12 +90,13 @@ bool display_driver_init(lv_disp_t** out_disp) {
 
     g_gfx->begin();
 
-    if (!g_gfx->getFramebuffer()) {
-        Serial.println("display_driver_init: Arduino_GFX begin failed");
-        return false;
-    }
+    g_has_framebuffer = g_gfx->getFramebuffer() != nullptr;
+    Serial.printf("display_driver_init: framebuffer=%s\n", g_has_framebuffer ? "yes" : "no");
 
     g_gfx->fillScreen(BLACK);
+    if (g_has_framebuffer && !kAutoFlush) {
+        g_gfx->flush();
+    }
 
     lv_draw_buf = static_cast<lv_color_t*>(heap_caps_malloc(
         kHorRes * kNoPsramBufferLines * sizeof(lv_color_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA | MALLOC_CAP_8BIT));
@@ -162,6 +168,14 @@ void display_driver_set_backlight_dimmed(bool dimmed) {
 
 bool display_driver_is_backlight_dimmed() {
     return g_backlight_dimmed;
+}
+
+void display_driver_set_render_enabled(bool enabled) {
+    g_render_enabled = enabled;
+}
+
+bool display_driver_is_render_enabled() {
+    return g_render_enabled;
 }
 
 } // namespace ptc

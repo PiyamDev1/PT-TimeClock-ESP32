@@ -119,6 +119,11 @@ void service_storage_save_touch_calibration(const TouchCalibration& calibration)
 }
 
 bool service_storage_load_touch_calibration(TouchCalibration& calibration) {
+    if (!g_prefs.isKey(kKeyTouchValid)) {
+        calibration = TouchCalibration{};
+        return false;
+    }
+
     calibration.raw_min_x = g_prefs.getUShort(kKeyTouchMinX, 0);
     calibration.raw_max_x = g_prefs.getUShort(kKeyTouchMaxX, 799);
     calibration.raw_min_y = g_prefs.getUShort(kKeyTouchMinY, 0);
@@ -126,17 +131,17 @@ bool service_storage_load_touch_calibration(TouchCalibration& calibration) {
     calibration.invert_x = g_prefs.getBool(kKeyTouchInvX, false);
     calibration.invert_y = g_prefs.getBool(kKeyTouchInvY, false);
     calibration.swap_xy = g_prefs.getBool(kKeyTouchSwap, false);
-    calibration.scale_x = g_prefs.getFloat(kKeyTouchScaleX, 1.0f);
-    calibration.offset_x = g_prefs.getFloat(kKeyTouchOffsetX, 0.0f);
-    calibration.scale_y = g_prefs.getFloat(kKeyTouchScaleY, 1.0f);
-    calibration.offset_y = g_prefs.getFloat(kKeyTouchOffsetY, 0.0f);
+    calibration.scale_x = g_prefs.isKey(kKeyTouchScaleX) ? g_prefs.getFloat(kKeyTouchScaleX, 1.0f) : 1.0f;
+    calibration.offset_x = g_prefs.isKey(kKeyTouchOffsetX) ? g_prefs.getFloat(kKeyTouchOffsetX, 0.0f) : 0.0f;
+    calibration.scale_y = g_prefs.isKey(kKeyTouchScaleY) ? g_prefs.getFloat(kKeyTouchScaleY, 1.0f) : 1.0f;
+    calibration.offset_y = g_prefs.isKey(kKeyTouchOffsetY) ? g_prefs.getFloat(kKeyTouchOffsetY, 0.0f) : 0.0f;
     calibration.use_affine = g_prefs.getBool(kKeyTouchUseAffine, false);
-    calibration.affine_xx = g_prefs.getFloat(kKeyTouchAffXX, 1.0f);
-    calibration.affine_xy = g_prefs.getFloat(kKeyTouchAffXY, 0.0f);
-    calibration.affine_x0 = g_prefs.getFloat(kKeyTouchAffX0, 0.0f);
-    calibration.affine_yx = g_prefs.getFloat(kKeyTouchAffYX, 0.0f);
-    calibration.affine_yy = g_prefs.getFloat(kKeyTouchAffYY, 1.0f);
-    calibration.affine_y0 = g_prefs.getFloat(kKeyTouchAffY0, 0.0f);
+    calibration.affine_xx = g_prefs.isKey(kKeyTouchAffXX) ? g_prefs.getFloat(kKeyTouchAffXX, 1.0f) : 1.0f;
+    calibration.affine_xy = g_prefs.isKey(kKeyTouchAffXY) ? g_prefs.getFloat(kKeyTouchAffXY, 0.0f) : 0.0f;
+    calibration.affine_x0 = g_prefs.isKey(kKeyTouchAffX0) ? g_prefs.getFloat(kKeyTouchAffX0, 0.0f) : 0.0f;
+    calibration.affine_yx = g_prefs.isKey(kKeyTouchAffYX) ? g_prefs.getFloat(kKeyTouchAffYX, 0.0f) : 0.0f;
+    calibration.affine_yy = g_prefs.isKey(kKeyTouchAffYY) ? g_prefs.getFloat(kKeyTouchAffYY, 1.0f) : 1.0f;
+    calibration.affine_y0 = g_prefs.isKey(kKeyTouchAffY0) ? g_prefs.getFloat(kKeyTouchAffY0, 0.0f) : 0.0f;
     calibration.valid = g_prefs.getBool(kKeyTouchValid, false);
     return calibration.valid;
 }

@@ -11,6 +11,7 @@
 #include "services/service_storage.h"
 
 #include "drivers/touch_driver.h"
+#include "drivers/display_driver.h"
 
 #include <Arduino.h>
 #include <WiFi.h>
@@ -22,6 +23,10 @@ namespace {
 
 constexpr int kStatusBarHeight = 48;
 constexpr int kTabBarHeight = 64;
+constexpr uint8_t kCalibrationPointCount = 30;
+constexpr uint8_t kCalibrationGridCols = 6;
+constexpr uint8_t kCalibrationGridRows = 5;
+constexpr uint32_t kSetupActionDebounceMs = 350;
 
 struct StatusUi {
     lv_obj_t* wifi = nullptr;
@@ -57,12 +62,18 @@ struct SetupUi {
     bool setup_started = false;
     bool calibration_complete = false;
     bool calibration_touch_held = false;
+    bool wifi_scan_in_progress = false;
+    bool wifi_scan_fallback_used = false;
+    bool display_suspended_for_wifi = false;
     uint32_t success_started_ms = 0;
     uint32_t connect_started_ms = 0;
-    uint16_t calibration_raw_x[10] = {0};
-    uint16_t calibration_raw_y[10] = {0};
-    int32_t calibration_target_x[10] = {0};
-    int32_t calibration_target_y[10] = {0};
+    uint32_t wifi_scan_started_ms = 0;
+    uint32_t wifi_resume_deadline_ms = 0;
+    uint32_t last_action_ms = 0;
+    uint16_t calibration_raw_x[kCalibrationPointCount] = {0};
+    uint16_t calibration_raw_y[kCalibrationPointCount] = {0};
+    int32_t calibration_target_x[kCalibrationPointCount] = {0};
+    int32_t calibration_target_y[kCalibrationPointCount] = {0};
     uint8_t step = 0;
     uint8_t calibration_step = 0;
 };
@@ -175,19 +186,9 @@ void show_keyboard(SetupUi& ui, bool show) {
     }
 }
 
-void refresh_wifi_networks(SetupUi& ui) {
+void apply_wifi_network_options(SetupUi& ui, int16_t count) {
     if (!ui.network_dropdown) {
         return;
-    }
-
-    WiFi.mode(WIFI_STA);
-    delay(120);
-    WiFi.scanDelete();
-    int16_t count = WiFi.scanNetworks(false, true);
-    if (count <= 0) {
-        delay(120);
-        WiFi.scanDelete();
-        count = WiFi.scanNetworks(false, false);
     }
 
     String options = "Manual SSID";
@@ -200,12 +201,80 @@ void refresh_wifi_networks(SetupUi& ui) {
             options += "\n";
             options += ssid;
         }
-    } else {
+    }
+    if (options == "Manual SSID") {
         options += "\nNo networks found";
     }
 
     lv_dropdown_set_options(ui.network_dropdown, options.c_str());
     lv_dropdown_set_selected(ui.network_dropdown, 0);
+}
+
+void begin_wifi_heavy_operation(SetupUi& ui, const char* title, const char* subtitle) {
+    if (ui.title) {
+        lv_label_set_text(ui.title, title);
+    }
+    if (ui.subtitle) {
+        lv_label_set_text(ui.subtitle, subtitle);
+    }
+    if (ui.action) {
+        lv_obj_add_flag(ui.action, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (ui.secondary) {
+        lv_obj_add_flag(ui.secondary, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (ui.spinner) {
+        lv_obj_clear_flag(ui.spinner, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (ui.progress) {
+        lv_obj_clear_flag(ui.progress, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (ui.overlay) {
+        lv_obj_clear_flag(ui.overlay, LV_OBJ_FLAG_HIDDEN);
+    }
+    lv_timer_handler();
+    delay(20);
+
+    if (!ui.display_suspended_for_wifi) {
+        display_driver_set_render_enabled(false);
+        ui.display_suspended_for_wifi = true;
+    }
+}
+
+void end_wifi_heavy_operation(SetupUi& ui) {
+    if (!ui.display_suspended_for_wifi) {
+        return;
+    }
+    display_driver_set_render_enabled(true);
+    ui.display_suspended_for_wifi = false;
+    ui.wifi_resume_deadline_ms = 0;
+}
+
+void refresh_wifi_networks(SetupUi& ui) {
+    if (!ui.network_dropdown) {
+        return;
+    }
+
+    begin_wifi_heavy_operation(ui, "Scanning Wi-Fi", "Pausing display for reliable scan...");
+
+    WiFi.mode(WIFI_STA);
+    WiFi.scanDelete();
+    int16_t count = WiFi.scanNetworks(false, true);
+    if (count <= 0) {
+        WiFi.scanDelete();
+        count = WiFi.scanNetworks(false, false);
+    }
+
+    apply_wifi_network_options(ui, count);
+    WiFi.scanDelete();
+    ui.wifi_scan_in_progress = false;
+    ui.wifi_scan_fallback_used = false;
+
+    end_wifi_heavy_operation(ui);
+}
+
+void poll_wifi_networks(SetupUi& ui) {
+    (void)ui;
 }
 
 void calibration_update_target(SetupUi& ui) {
@@ -216,23 +285,25 @@ void calibration_update_target(SetupUi& ui) {
     lv_disp_t* disp = lv_disp_get_default();
     int32_t w = disp ? lv_disp_get_hor_res(disp) : 480;
     int32_t h = disp ? lv_disp_get_ver_res(disp) : 800;
-    static const int kPointPercentX[10] = {10, 50, 90, 10, 90, 10, 90, 10, 90, 50};
-    static const int kPointPercentY[10] = {10, 10, 10, 30, 30, 50, 50, 70, 70, 90};
-
     uint8_t idx = ui.calibration_step;
-    if (idx > 9) {
-        idx = 9;
+    if (idx >= kCalibrationPointCount) {
+        idx = kCalibrationPointCount - 1;
     }
 
-    int32_t tx = (w * kPointPercentX[idx]) / 100;
-    int32_t ty = (h * kPointPercentY[idx]) / 100;
+    uint8_t col = idx % kCalibrationGridCols;
+    uint8_t row = idx / kCalibrationGridCols;
+    int32_t x_percent = 8 + (84 * col) / (kCalibrationGridCols - 1);
+    int32_t y_percent = 8 + (84 * row) / (kCalibrationGridRows - 1);
+
+    int32_t tx = (w * x_percent) / 100;
+    int32_t ty = (h * y_percent) / 100;
 
     ui.calibration_target_x[idx] = tx;
     ui.calibration_target_y[idx] = ty;
     lv_obj_set_pos(ui.calibration_target, tx - 10, ty - 10);
 
     char hint[40];
-    snprintf(hint, sizeof(hint), "Tap X (%u/10)", static_cast<unsigned>(idx + 1));
+    snprintf(hint, sizeof(hint), "Tap X (%u/%u)", static_cast<unsigned>(idx + 1), static_cast<unsigned>(kCalibrationPointCount));
     lv_label_set_text(ui.calibration_hint, hint);
 }
 
@@ -248,7 +319,7 @@ void calibration_finish(SetupUi& ui) {
         float s_yt = 0.0f;
         float s_1t = 0.0f;
 
-        for (int i = 0; i < 10; ++i) {
+        for (int i = 0; i < kCalibrationPointCount; ++i) {
             float x = static_cast<float>(raw_x[i]);
             float y = static_cast<float>(raw_y[i]);
             float t = static_cast<float>(target[i]);
@@ -265,7 +336,7 @@ void calibration_finish(SetupUi& ui) {
         float m[3][4] = {
             {s_xx, s_xy, s_x1, s_xt},
             {s_xy, s_yy, s_y1, s_yt},
-            {s_x1, s_y1, 10.0f, s_1t},
+            {s_x1, s_y1, static_cast<float>(kCalibrationPointCount), s_1t},
         };
 
         for (int col = 0; col < 3; ++col) {
@@ -316,7 +387,7 @@ void calibration_finish(SetupUi& ui) {
     auto affine_error = [](const uint16_t* raw_x, const uint16_t* raw_y, const int32_t* target_x, const int32_t* target_y,
                            float ax, float bx, float cx, float ay, float by, float cy) {
         float error = 0.0f;
-        for (int i = 0; i < 10; ++i) {
+        for (int i = 0; i < kCalibrationPointCount; ++i) {
             float rx = static_cast<float>(raw_x[i]);
             float ry = static_cast<float>(raw_y[i]);
             float px = ax * rx + bx * ry + cx;
@@ -329,13 +400,13 @@ void calibration_finish(SetupUi& ui) {
     };
 
     auto fit_line = [](const uint16_t* source, const int32_t* target, float& scale, float& offset) {
-        const float n = 10.0f;
+        const float n = static_cast<float>(kCalibrationPointCount);
         float sum_x = 0.0f;
         float sum_y = 0.0f;
         float sum_xx = 0.0f;
         float sum_xy = 0.0f;
 
-        for (int i = 0; i < 10; ++i) {
+        for (int i = 0; i < kCalibrationPointCount; ++i) {
             float x = static_cast<float>(source[i]);
             float y = static_cast<float>(target[i]);
             sum_x += x;
@@ -358,7 +429,7 @@ void calibration_finish(SetupUi& ui) {
     auto fit_error = [](const uint16_t* source_x, const uint16_t* source_y, const int32_t* target_x, const int32_t* target_y,
                         float sx, float ox, float sy, float oy) {
         float error = 0.0f;
-        for (int i = 0; i < 10; ++i) {
+        for (int i = 0; i < kCalibrationPointCount; ++i) {
             float px = sx * static_cast<float>(source_x[i]) + ox;
             float py = sy * static_cast<float>(source_y[i]) + oy;
             float dx = px - static_cast<float>(target_x[i]);
@@ -422,7 +493,7 @@ void calibration_finish(SetupUi& ui) {
     uint16_t raw_x_max = ui.calibration_raw_x[0];
     uint16_t raw_y_min = ui.calibration_raw_y[0];
     uint16_t raw_y_max = ui.calibration_raw_y[0];
-    for (int i = 1; i < 10; ++i) {
+    for (int i = 1; i < kCalibrationPointCount; ++i) {
         raw_x_min = min(raw_x_min, ui.calibration_raw_x[i]);
         raw_x_max = max(raw_x_max, ui.calibration_raw_x[i]);
         raw_y_min = min(raw_y_min, ui.calibration_raw_y[i]);
@@ -458,8 +529,8 @@ void calibration_finish(SetupUi& ui) {
             calibration.affine_y0);
     }
 
-    Serial.println("[CAL] 10-point capture complete");
-    for (uint8_t i = 0; i < 10; ++i) {
+    Serial.printf("[CAL] %u-point capture complete\n", static_cast<unsigned>(kCalibrationPointCount));
+    for (uint8_t i = 0; i < kCalibrationPointCount; ++i) {
         Serial.printf("[CAL] %u target=(%ld,%ld) raw=(%u,%u)\n",
             static_cast<unsigned>(i + 1),
             static_cast<long>(ui.calibration_target_x[i]),
@@ -503,7 +574,7 @@ void calibration_timer_cb(lv_timer_t* timer) {
 
     if (!pressed && ui->calibration_touch_held) {
         ui->calibration_touch_held = false;
-        if (ui->calibration_step < 9) {
+        if (ui->calibration_step < (kCalibrationPointCount - 1)) {
             ui->calibration_step++;
             calibration_update_target(*ui);
         } else {
@@ -515,7 +586,7 @@ void calibration_timer_cb(lv_timer_t* timer) {
 void calibration_start(SetupUi& ui) {
     ui.calibration_step = 0;
     ui.calibration_touch_held = false;
-    Serial.println("[CAL] start 10-point capture");
+    Serial.printf("[CAL] start %u-point capture\n", static_cast<unsigned>(kCalibrationPointCount));
     if (ui.calibration_overlay) {
         lv_obj_clear_flag(ui.calibration_overlay, LV_OBJ_FLAG_HIDDEN);
     }
@@ -600,6 +671,14 @@ void setup_timer_cb(lv_timer_t* timer) {
     if (!ui || !ui->state || !ui->overlay) {
         return;
     }
+
+    if (ui->display_suspended_for_wifi && ui->wifi_resume_deadline_ms > 0) {
+        if (ui->state->wifi_connected || !service_wifi_is_connecting() || millis() > ui->wifi_resume_deadline_ms) {
+            end_wifi_heavy_operation(*ui);
+        }
+    }
+
+    poll_wifi_networks(*ui);
 
     if (!ui->calibration_complete) {
         lv_obj_clear_flag(ui->overlay, LV_OBJ_FLAG_HIDDEN);
@@ -699,7 +778,7 @@ void ui_root_init(DeviceConfig& config, AppState& state) {
 
     static SetupUi setup_ui;
     setup_ui.state = &state;
-    setup_ui.calibration_complete = touch_driver_get_calibration().valid;
+    setup_ui.calibration_complete = true;
 
     setup_ui.overlay = lv_obj_create(screen);
     lv_obj_set_size(setup_ui.overlay, screen_w, screen_h);
@@ -756,35 +835,6 @@ void ui_root_init(DeviceConfig& config, AppState& state) {
     lv_bar_set_range(setup_ui.progress, 0, 100);
     lv_bar_set_value(setup_ui.progress, 25, LV_ANIM_ON);
 
-    lv_obj_add_event_cb(setup_ui.action, [](lv_event_t* event) {
-        auto* ui = static_cast<SetupUi*>(lv_event_get_user_data(event));
-        if (!ui) {
-            return;
-        }
-
-        if (ui->step == kStepSuccess) {
-            lv_obj_add_flag(ui->overlay, LV_OBJ_FLAG_HIDDEN);
-            return;
-        }
-
-        if (ui->step == kStepCalibrate) {
-            calibration_start(*ui);
-            return;
-        }
-
-        refresh_wifi_networks(*ui);
-        show_keyboard(*ui, true);
-    }, LV_EVENT_CLICKED, &setup_ui);
-
-    lv_obj_add_event_cb(setup_ui.secondary, [](lv_event_t* event) {
-        auto* ui = static_cast<SetupUi*>(lv_event_get_user_data(event));
-        if (!ui) {
-            return;
-        }
-        refresh_wifi_networks(*ui);
-        show_keyboard(*ui, true);
-    }, LV_EVENT_CLICKED, &setup_ui);
-
     setup_ui.keyboard_overlay = lv_obj_create(screen);
     lv_obj_set_size(setup_ui.keyboard_overlay, screen_w, screen_h);
     lv_obj_set_style_bg_color(setup_ui.keyboard_overlay, lv_color_hex(0x0A1218), 0);
@@ -826,27 +876,6 @@ void ui_root_init(DeviceConfig& config, AppState& state) {
     lv_obj_t* scan_label = lv_label_create(setup_ui.network_scan);
     lv_label_set_text(scan_label, "Scan Wi-Fi");
 
-    lv_obj_add_event_cb(setup_ui.network_scan, [](lv_event_t* event) {
-        auto* ui = static_cast<SetupUi*>(lv_event_get_user_data(event));
-        if (!ui) {
-            return;
-        }
-        refresh_wifi_networks(*ui);
-    }, LV_EVENT_CLICKED, &setup_ui);
-
-    lv_obj_add_event_cb(setup_ui.network_dropdown, [](lv_event_t* event) {
-        auto* ui = static_cast<SetupUi*>(lv_event_get_user_data(event));
-        if (!ui || !ui->network_dropdown || !ui->ssid_input) {
-            return;
-        }
-
-        char selected[96] = {0};
-        lv_dropdown_get_selected_str(ui->network_dropdown, selected, sizeof(selected));
-        if (strcmp(selected, "Manual SSID") != 0 && strcmp(selected, "No networks found") != 0) {
-            lv_textarea_set_text(ui->ssid_input, selected);
-        }
-    }, LV_EVENT_VALUE_CHANGED, &setup_ui);
-
     setup_ui.ssid_input = lv_textarea_create(kb_card);
     lv_textarea_set_placeholder_text(setup_ui.ssid_input, "Wi-Fi SSID");
     lv_obj_set_width(setup_ui.ssid_input, kb_card_w - 40);
@@ -861,6 +890,111 @@ void ui_root_init(DeviceConfig& config, AppState& state) {
     lv_keyboard_set_mode(setup_ui.keyboard, LV_KEYBOARD_MODE_TEXT_LOWER);
     lv_keyboard_set_textarea(setup_ui.keyboard, setup_ui.ssid_input);
     lv_obj_add_flag(setup_ui.keyboard, LV_OBJ_FLAG_HIDDEN);
+
+    auto setup_action_cb2 = [](lv_event_t* event) {
+        auto* ui = static_cast<SetupUi*>(lv_event_get_user_data(event));
+        if (!ui || !ui->overlay || lv_obj_has_flag(ui->overlay, LV_OBJ_FLAG_HIDDEN)) {
+            return;
+        }
+        uint32_t now = millis();
+        if (now - ui->last_action_ms < kSetupActionDebounceMs) {
+            return;
+        }
+        ui->last_action_ms = now;
+        if (ui->step == kStepSuccess) {
+            lv_obj_add_flag(ui->overlay, LV_OBJ_FLAG_HIDDEN);
+            return;
+        }
+        if (ui->step == kStepCalibrate) {
+            calibration_start(*ui);
+            return;
+        }
+        refresh_wifi_networks(*ui);
+        show_keyboard(*ui, true);
+    };
+    lv_obj_add_event_cb(setup_ui.action, setup_action_cb2, LV_EVENT_CLICKED, &setup_ui);
+    lv_obj_add_event_cb(setup_ui.action, setup_action_cb2, LV_EVENT_PRESSED, &setup_ui);
+
+    auto setup_secondary_cb2 = [](lv_event_t* event) {
+        auto* ui = static_cast<SetupUi*>(lv_event_get_user_data(event));
+        if (!ui || !ui->overlay || lv_obj_has_flag(ui->overlay, LV_OBJ_FLAG_HIDDEN)) {
+            return;
+        }
+        uint32_t now = millis();
+        if (now - ui->last_action_ms < kSetupActionDebounceMs) {
+            return;
+        }
+        ui->last_action_ms = now;
+        if (ui->step == kStepSuccess) {
+            lv_obj_add_flag(ui->overlay, LV_OBJ_FLAG_HIDDEN);
+            return;
+        }
+        if (ui->step == kStepCalibrate) {
+            calibration_start(*ui);
+            return;
+        }
+        refresh_wifi_networks(*ui);
+        show_keyboard(*ui, true);
+    };
+    lv_obj_add_event_cb(setup_ui.secondary, setup_secondary_cb2, LV_EVENT_CLICKED, &setup_ui);
+    lv_obj_add_event_cb(setup_ui.secondary, setup_secondary_cb2, LV_EVENT_PRESSED, &setup_ui);
+
+    lv_obj_add_event_cb(setup_ui.overlay, [](lv_event_t* event) {
+        auto* ui = static_cast<SetupUi*>(lv_event_get_user_data(event));
+        if (!ui || !ui->overlay || lv_obj_has_flag(ui->overlay, LV_OBJ_FLAG_HIDDEN)) {
+            return;
+        }
+        uint32_t now = millis();
+        if (now - ui->last_action_ms < kSetupActionDebounceMs) {
+            return;
+        }
+        ui->last_action_ms = now;
+        if (ui->keyboard_overlay && !lv_obj_has_flag(ui->keyboard_overlay, LV_OBJ_FLAG_HIDDEN)) {
+            return;
+        }
+        if (ui->calibration_overlay && !lv_obj_has_flag(ui->calibration_overlay, LV_OBJ_FLAG_HIDDEN)) {
+            return;
+        }
+        if (ui->step == kStepSuccess) {
+            lv_obj_add_flag(ui->overlay, LV_OBJ_FLAG_HIDDEN);
+            return;
+        }
+        if (ui->step == kStepCalibrate) {
+            calibration_start(*ui);
+            return;
+        }
+        refresh_wifi_networks(*ui);
+        show_keyboard(*ui, true);
+    }, LV_EVENT_PRESSED, &setup_ui);
+
+    lv_obj_add_event_cb(setup_ui.network_scan, [](lv_event_t* event) {
+        auto* ui = static_cast<SetupUi*>(lv_event_get_user_data(event));
+        if (!ui) {
+            return;
+        }
+        refresh_wifi_networks(*ui);
+    }, LV_EVENT_CLICKED, &setup_ui);
+
+    lv_obj_add_event_cb(setup_ui.network_scan, [](lv_event_t* event) {
+        auto* ui = static_cast<SetupUi*>(lv_event_get_user_data(event));
+        if (!ui) {
+            return;
+        }
+        refresh_wifi_networks(*ui);
+    }, LV_EVENT_PRESSED, &setup_ui);
+
+    lv_obj_add_event_cb(setup_ui.network_dropdown, [](lv_event_t* event) {
+        auto* ui = static_cast<SetupUi*>(lv_event_get_user_data(event));
+        if (!ui || !ui->network_dropdown || !ui->ssid_input) {
+            return;
+        }
+
+        char selected[96] = {0};
+        lv_dropdown_get_selected_str(ui->network_dropdown, selected, sizeof(selected));
+        if (strcmp(selected, "Manual SSID") != 0 && strcmp(selected, "No networks found") != 0 && strcmp(selected, "Scanning...") != 0) {
+            lv_textarea_set_text(ui->ssid_input, selected);
+        }
+    }, LV_EVENT_VALUE_CHANGED, &setup_ui);
 
     lv_obj_add_event_cb(setup_ui.ssid_input, [](lv_event_t* event) {
         auto* ui = static_cast<SetupUi*>(lv_event_get_user_data(event));
@@ -923,8 +1057,10 @@ void ui_root_init(DeviceConfig& config, AppState& state) {
             return;
         }
         show_keyboard(*ui, false);
+        begin_wifi_heavy_operation(*ui, "Connecting Wi-Fi", "Pausing display during connect...");
         ui->setup_started = true;
         ui->connect_started_ms = millis();
+        ui->wifi_resume_deadline_ms = millis() + 12000;
         service_wifi_connect(ssid, pass);
     }, LV_EVENT_CLICKED, &setup_ui);
 

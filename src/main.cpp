@@ -24,9 +24,26 @@ namespace {
 
 constexpr uint32_t kScreenDimTimeoutMs = 60000;
 constexpr uint32_t kScreenOffTimeoutMs = 120000;
+constexpr uint32_t kUiTickIntervalMs = 16;
+constexpr uint32_t kWifiTickIntervalMs = 25;
+constexpr uint32_t kTimeTickIntervalMs = 200;
+constexpr uint32_t kHttpTickIntervalMs = 40;
+constexpr uint32_t kQrTickIntervalMs = 80;
+constexpr uint32_t kLogTickIntervalMs = 120;
+constexpr uint32_t kOtaTickIntervalMs = 60;
+constexpr uint32_t kMaxLoopSleepMs = 40;
+constexpr uint32_t kTargetBusyPercent = 60;
+
 uint32_t g_last_input_ms = 0;
 bool g_display_ready = false;
 uint32_t g_last_heartbeat_ms = 0;
+uint32_t g_last_ui_tick_ms = 0;
+uint32_t g_last_wifi_tick_ms = 0;
+uint32_t g_last_time_tick_ms = 0;
+uint32_t g_last_http_tick_ms = 0;
+uint32_t g_last_qr_tick_ms = 0;
+uint32_t g_last_log_tick_ms = 0;
+uint32_t g_last_ota_tick_ms = 0;
 
 }
 
@@ -38,10 +55,7 @@ void setup() {
     ptc::service_storage_init();
     ptc::service_storage_load_config(g_config, g_state);
     g_config.display_rotation = 90;
-    ptc::TouchCalibration touch_calibration;
-    if (ptc::service_storage_load_touch_calibration(touch_calibration)) {
-        ptc::touch_driver_set_calibration(touch_calibration);
-    }
+    ptc::touch_driver_set_calibration(ptc::TouchCalibration{});
 
     ptc::service_wifi_init();
     ptc::service_time_init();
@@ -93,18 +107,48 @@ void setup() {
 }
 
 void loop() {
-    ptc::service_wifi_tick(g_config, g_state);
-    ptc::service_time_tick(g_config, g_state);
-    ptc::service_http_tick(g_config, g_state);
-    ptc::service_qr_tick(g_config, g_state);
-    ptc::service_log_tick(g_config, g_state);
-    ptc::service_ota_tick(g_config, g_state);
+    uint32_t loop_start_us = micros();
+    uint32_t now_ms = millis();
 
-    if (g_display_ready) {
-        lv_timer_handler();
+    if (now_ms - g_last_wifi_tick_ms >= kWifiTickIntervalMs) {
+        g_last_wifi_tick_ms = now_ms;
+        ptc::service_wifi_tick(g_config, g_state);
+    }
+    if (now_ms - g_last_time_tick_ms >= kTimeTickIntervalMs) {
+        g_last_time_tick_ms = now_ms;
+        ptc::service_time_tick(g_config, g_state);
+    }
+    if (now_ms - g_last_http_tick_ms >= kHttpTickIntervalMs) {
+        g_last_http_tick_ms = now_ms;
+        ptc::service_http_tick(g_config, g_state);
+    }
+    if (now_ms - g_last_qr_tick_ms >= kQrTickIntervalMs) {
+        g_last_qr_tick_ms = now_ms;
+        ptc::service_qr_tick(g_config, g_state);
+    }
+    if (now_ms - g_last_log_tick_ms >= kLogTickIntervalMs) {
+        g_last_log_tick_ms = now_ms;
+        ptc::service_log_tick(g_config, g_state);
+    }
+    if (now_ms - g_last_ota_tick_ms >= kOtaTickIntervalMs) {
+        g_last_ota_tick_ms = now_ms;
+        ptc::service_ota_tick(g_config, g_state);
     }
 
-    uint32_t now = millis();
+    uint32_t lv_delay_ms = 5;
+    if (g_display_ready && now_ms - g_last_ui_tick_ms >= kUiTickIntervalMs) {
+        g_last_ui_tick_ms = now_ms;
+        uint32_t next = lv_timer_handler();
+        if (next < 2) {
+            lv_delay_ms = 2;
+        } else if (next > 10) {
+            lv_delay_ms = 10;
+        } else {
+            lv_delay_ms = next;
+        }
+    }
+
+    uint32_t now = now_ms;
     if (now - g_last_heartbeat_ms > 5000) {
         g_last_heartbeat_ms = now;
         Serial.printf("[HEARTBEAT] up=%lus display=%d wifi=%d heap=%u\n",
@@ -138,5 +182,20 @@ void loop() {
         }
     }
 
-    delay(5);
+    uint32_t busy_us = micros() - loop_start_us;
+    uint32_t target_total_us = (busy_us * 100U) / kTargetBusyPercent;
+    if (target_total_us < busy_us) {
+        target_total_us = busy_us;
+    }
+    uint32_t reserve_sleep_us = target_total_us - busy_us;
+    uint32_t reserve_sleep_ms = reserve_sleep_us / 1000U;
+    if (reserve_sleep_ms > kMaxLoopSleepMs) {
+        reserve_sleep_ms = kMaxLoopSleepMs;
+    }
+
+    uint32_t sleep_ms = lv_delay_ms;
+    if (reserve_sleep_ms > sleep_ms) {
+        sleep_ms = reserve_sleep_ms;
+    }
+    delay(sleep_ms);
 }

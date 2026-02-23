@@ -14,10 +14,12 @@ constexpr uint8_t kGt911Addr1 = 0x5D;
 constexpr uint8_t kGt911Addr2 = 0x14;
 constexpr uint16_t kRegStatus = 0x814E;
 constexpr uint16_t kRegPoints = 0x8150;
+constexpr bool kTouchCalibrationEnabled = false;
 
 uint8_t g_addr = kGt911Addr1;
 bool g_tap_latched = false;
 TouchCalibration g_calibration;
+uint32_t g_last_touch_log_ms = 0;
 
 bool i2c_read(uint16_t reg, uint8_t* data, size_t len) {
     Wire.beginTransmission(g_addr);
@@ -60,10 +62,13 @@ bool read_point(uint16_t& x, uint16_t& y, bool& pressed) {
         return false;
     }
 
+    bool data_ready = (status & 0x80) != 0;
     uint8_t points = status & 0x0F;
     if (points == 0) {
         pressed = false;
-        i2c_write(kRegStatus, 0);
+        if (data_ready) {
+            i2c_write(kRegStatus, 0);
+        }
         return true;
     }
 
@@ -146,19 +151,33 @@ uint16_t clamp_u16(int32_t value, uint16_t max_value) {
 
 bool touch_driver_init() {
     Wire.begin(pins::kTouchSda, pins::kTouchScl);
+    Wire.setClock(100000);
+    Wire.setTimeOut(25);
     if (pins::kTouchRst >= 0) {
         pinMode(pins::kTouchRst, OUTPUT);
         digitalWrite(pins::kTouchRst, LOW);
         delay(10);
         digitalWrite(pins::kTouchRst, HIGH);
-        delay(50);
+        delay(80);
     }
 
-    return detect_addr();
+    bool detected = detect_addr();
+    Serial.printf("touch_driver_init: detected=%d addr=0x%02X\n", detected ? 1 : 0, g_addr);
+    return detected;
 }
 
 void touch_driver_read(lv_indev_drv_t* drv, lv_indev_data_t* data) {
     LV_UNUSED(drv);
+
+    lv_disp_t* disp = lv_disp_get_default();
+    uint16_t out_w = disp ? static_cast<uint16_t>(lv_disp_get_hor_res(disp)) : 480;
+    uint16_t out_h = disp ? static_cast<uint16_t>(lv_disp_get_ver_res(disp)) : 800;
+    if (out_w == 0) {
+        out_w = 1;
+    }
+    if (out_h == 0) {
+        out_h = 1;
+    }
 
     uint16_t x = 0;
     uint16_t y = 0;
@@ -168,16 +187,7 @@ void touch_driver_read(lv_indev_drv_t* drv, lv_indev_data_t* data) {
         return;
     }
 
-    if (g_calibration.valid) {
-        lv_disp_t* disp = lv_disp_get_default();
-        uint16_t out_w = disp ? static_cast<uint16_t>(lv_disp_get_hor_res(disp)) : 480;
-        uint16_t out_h = disp ? static_cast<uint16_t>(lv_disp_get_ver_res(disp)) : 800;
-        if (out_w == 0) {
-            out_w = 1;
-        }
-        if (out_h == 0) {
-            out_h = 1;
-        }
+    if (kTouchCalibrationEnabled && g_calibration.valid) {
         int32_t mapped_x = 0;
         int32_t mapped_y = 0;
         if (g_calibration.use_affine) {
@@ -201,11 +211,18 @@ void touch_driver_read(lv_indev_drv_t* drv, lv_indev_data_t* data) {
         x = clamp_u16(mapped_x, static_cast<uint16_t>(out_w - 1));
         y = clamp_u16(mapped_y, static_cast<uint16_t>(out_h - 1));
     } else {
-        if (x >= 800) {
-            x = 799;
+        bool portrait_ui = out_h > out_w;
+        if (portrait_ui) {
+            bool raw_looks_landscape = x < 800 && y < 480;
+            if (raw_looks_landscape) {
+                apply_rotation(x, y);
+            }
         }
-        if (y >= 480) {
-            y = 479;
+        if (x >= out_w) {
+            x = static_cast<uint16_t>(out_w - 1);
+        }
+        if (y >= out_h) {
+            y = static_cast<uint16_t>(out_h - 1);
         }
     }
 
@@ -221,6 +238,18 @@ void touch_driver_read(lv_indev_drv_t* drv, lv_indev_data_t* data) {
     data->state = pressed ? LV_INDEV_STATE_PR : LV_INDEV_STATE_REL;
     data->point.x = x;
     data->point.y = y;
+
+    if (pressed) {
+        uint32_t now = millis();
+        if (now - g_last_touch_log_ms > 150) {
+            g_last_touch_log_ms = now;
+            Serial.printf("[TOUCH] x=%u y=%u state=PR cal=%d\n",
+                static_cast<unsigned>(x),
+                static_cast<unsigned>(y),
+                g_calibration.valid ? 1 : 0);
+        }
+    }
+
     return;
 }
 
@@ -245,7 +274,12 @@ bool touch_driver_poll_raw(uint16_t& x, uint16_t& y, bool& pressed) {
 }
 
 void touch_driver_set_calibration(const TouchCalibration& calibration) {
-    g_calibration = calibration;
+    if (kTouchCalibrationEnabled) {
+        g_calibration = calibration;
+        return;
+    }
+    g_calibration = TouchCalibration{};
+    g_calibration.valid = false;
 }
 
 TouchCalibration touch_driver_get_calibration() {
