@@ -25,14 +25,15 @@ USB flashing note:
 
 ## Screensaver
 
-- Display backlight dims after 60 seconds of no touch input.
-- If still inactive while dimmed, display backlight turns off at 120 seconds.
+- Display rendering and the GPIO2 backlight turn off after 60 seconds of no touch input.
+- The GT911 interrupt on GPIO18 wakes the display, with a 50 ms touch-polling
+  fallback while off so a missed interrupt cannot strand the screen.
 - A tap wakes the display.
 - The wake tap is consumed, so it won’t trigger the underlying button/tile press.
 
 ## OTA updates
 
-OTA is manual-only. Tap "Enable OTA" in Settings to start the OTA listener. The hostname is set to `ptc-<device_id>`.
+Arduino OTA starts automatically when Wi-Fi connects. The hostname is set to `ptc-<device_id>`.
 
 GitHub OTA: tap "Install latest GitHub update". The device fetches the latest release, downloads `firmware.bin`, and stages it for boot. Reboot is deferred until you tap "Reboot to finish update".
 
@@ -139,4 +140,5 @@ If the OTA hostname is not discoverable, use the device IP and add it to the upl
 ## Notes
 
 - The display and touch drivers are wired for the ESP32-8048S050C (yellow board). Adjust timings in src/drivers/display_driver.cpp if you see tearing.
+- Current hardware revision: R5 removed and R17 pads bridged. Verify LCD/backlight behavior on the actual board; firmware still assumes GPIO2 controls backlight enable with HIGH = on and LOW = off.
 - OTA requires Wi-Fi to be connected. Check the Settings tab for OTA status.

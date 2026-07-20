@@ -4,6 +4,9 @@
 #include <WiFiClientSecure.h>
 
 #include <ArduinoJson.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/queue.h>
+#include <freertos/task.h>
 #include <vector>
 #include <time.h>
 
@@ -24,13 +27,159 @@ bool g_force_notice = false;
 uint32_t g_last_notice_ts = 0;
 bool g_api_ok = false;
 String g_last_error;
+QueueHandle_t g_registration_results = nullptr;
+bool g_registration_in_progress = false;
+uint32_t g_next_registration_ms = 0;
+uint32_t g_registration_retry_ms = 5000;
 
 constexpr uint32_t kConfigIntervalMs = 300000;
 constexpr uint32_t kNoticeIntervalMs = 180000;
 constexpr uint32_t kHeartbeatIntervalMs = 60000;
+constexpr uint32_t kRegistrationRetryMaxMs = 60000;
+
+struct RegistrationTaskContext {
+    char url[256] = {0};
+    char payload[384] = {0};
+};
+
+struct RegistrationTaskResult {
+    int16_t http_code = 0;
+    char response[768] = {0};
+    char error[96] = {0};
+};
 
 String build_url(const char* path) {
     return String(secrets::kApiBaseUrl) + path;
+}
+
+bool api_endpoint_configured() {
+    const String base_url = secrets::kApiBaseUrl;
+    return base_url.startsWith("http://") || base_url.startsWith("https://")
+        ? base_url.indexOf("example.com") < 0
+        : false;
+}
+
+bool portal_qr_contract() {
+    return String(secrets::kApiBaseUrl).indexOf("ims.piyamtravel.com") >= 0;
+}
+
+void registration_task(void* parameter) {
+    auto* context = static_cast<RegistrationTaskContext*>(parameter);
+    RegistrationTaskResult result;
+
+    WiFiClientSecure client;
+    client.setInsecure();
+    client.setTimeout(8000);
+
+    HTTPClient http;
+    http.setConnectTimeout(5000);
+    http.setTimeout(8000);
+    if (!http.begin(client, context->url)) {
+        strlcpy(result.error, "HTTP begin failed", sizeof(result.error));
+    } else {
+        http.addHeader("Content-Type", "application/json");
+        result.http_code = static_cast<int16_t>(http.POST(context->payload));
+        if (result.http_code > 0) {
+            const String response = http.getString();
+            strlcpy(result.response, response.c_str(), sizeof(result.response));
+        } else {
+            snprintf(result.error, sizeof(result.error), "Connection failed (%d)", result.http_code);
+        }
+        http.end();
+    }
+
+    if (g_registration_results) {
+        xQueueOverwrite(g_registration_results, &result);
+    }
+    delete context;
+    vTaskDelete(nullptr);
+}
+
+bool start_registration(DeviceConfig& config) {
+    if (config.device_id.length() == 0) {
+        uint8_t mac[6] = {0};
+        WiFi.macAddress(mac);
+        char device_id[32];
+        snprintf(device_id, sizeof(device_id), "ESP32S3-%02X%02X%02X%02X%02X%02X",
+            mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+        config.device_id = device_id;
+    }
+
+    StaticJsonDocument<256> doc;
+    doc["device_id"] = config.device_id;
+    doc["device_name"] = config.device_id;
+    doc["firmware_version"] = kFirmwareVersion;
+
+    String payload;
+    serializeJson(doc, payload);
+
+    auto* context = new RegistrationTaskContext();
+    if (!context) {
+        g_last_error = "Registration memory allocation failed";
+        return false;
+    }
+    const String url = build_url("/api/timeclock/devices/register");
+    strlcpy(context->url, url.c_str(), sizeof(context->url));
+    strlcpy(context->payload, payload.c_str(), sizeof(context->payload));
+
+    const BaseType_t created = xTaskCreatePinnedToCore(
+        registration_task, "http_register", 8192, context, 1, nullptr, 0);
+    if (created != pdPASS) {
+        delete context;
+        g_last_error = "Registration task could not start";
+        return false;
+    }
+
+    g_registration_in_progress = true;
+    g_last_error = "";
+    Serial.println("[HTTP] registration started in background");
+    return true;
+}
+
+void apply_registration_result(DeviceConfig& config, AppState& state, const RegistrationTaskResult& result) {
+    g_registration_in_progress = false;
+    if (result.http_code < 200 || result.http_code >= 300) {
+        g_api_ok = false;
+        g_last_error = result.error[0]
+            ? String(result.error)
+            : String("Registration HTTP error ") + result.http_code;
+        service_log_add("Register failed");
+        g_next_registration_ms = millis() + g_registration_retry_ms;
+        g_registration_retry_ms = min(g_registration_retry_ms * 2, kRegistrationRetryMaxMs);
+        Serial.printf("[HTTP] registration failed: %s\n", g_last_error.c_str());
+        return;
+    }
+
+    StaticJsonDocument<512> response;
+    if (deserializeJson(response, result.response) != DeserializationError::Ok) {
+        g_api_ok = false;
+        g_last_error = "Registration response was invalid";
+        service_log_add("Register parse error");
+        g_next_registration_ms = millis() + g_registration_retry_ms;
+        return;
+    }
+
+    config.device_secret = String(response["secret"] | "");
+    if (config.device_secret.isEmpty()) {
+        g_api_ok = false;
+        g_last_error = "Registration response did not include a secret";
+        g_next_registration_ms = millis() + g_registration_retry_ms;
+        return;
+    }
+
+    config.location_id = String(response["location_id"] | "");
+    config.location_name = String(response["location_name"] | "");
+    config.qr_interval_sec = response["qr_interval_sec"] | kDefaultQrIntervalSec;
+    const bool active = response["is_active"] | true;
+    state.device_active = active;
+    state.provisioning_complete = true;
+    service_storage_save_device_active(active);
+    service_storage_save_config(config);
+    service_log_add("Device registered");
+    g_api_ok = true;
+    g_last_error = "";
+    g_registration_retry_ms = 5000;
+    Serial.println("[HTTP] registration complete");
 }
 
 bool http_post_json(const String& url, const String& payload, String& response) {
@@ -78,50 +227,6 @@ bool http_get_json(const String& url, String& response) {
         g_last_error = "";
     }
     return code >= 200 && code < 300;
-}
-
-void handle_register(DeviceConfig& config, AppState& state) {
-    if (config.device_id.length() == 0) {
-        uint8_t mac[6] = {0};
-        WiFi.macAddress(mac);
-        char buf[32];
-        snprintf(buf, sizeof(buf), "ESP32S3-%02X%02X%02X%02X%02X%02X",
-            mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
-        config.device_id = String(buf);
-    }
-
-    StaticJsonDocument<256> doc;
-    doc["device_id"] = config.device_id;
-    doc["device_name"] = config.device_id;
-    doc["firmware_version"] = kFirmwareVersion;
-
-    String payload;
-    serializeJson(doc, payload);
-
-    String response;
-    if (!http_post_json(build_url("/api/timeclock/devices/register"), payload, response)) {
-        service_log_add("Register failed");
-        return;
-    }
-
-    StaticJsonDocument<512> res;
-    if (deserializeJson(res, response) != DeserializationError::Ok) {
-        service_log_add("Register parse error");
-        return;
-    }
-
-    config.device_secret = String(res["secret"] | "");
-    config.location_id = String(res["location_id"] | "");
-    config.location_name = String(res["location_name"] | "");
-    config.qr_interval_sec = res["qr_interval_sec"] | kDefaultQrIntervalSec;
-    bool active = res["is_active"] | true;
-    if (state.device_active != active) {
-        state.device_active = active;
-        service_storage_save_device_active(active);
-    }
-
-    service_storage_save_config(config);
-    service_log_add("Device registered");
 }
 
 void handle_config(DeviceConfig& config, AppState& state) {
@@ -197,7 +302,10 @@ void handle_heartbeat(DeviceConfig& config) {
 } // namespace
 
 void service_http_init() {
+    g_api_ok = false;
+    g_last_error = "";
     g_notices.reserve(8);
+    g_registration_results = xQueueCreate(1, sizeof(RegistrationTaskResult));
 
     String cached;
     uint32_t ts = 0;
@@ -223,27 +331,47 @@ void service_http_tick(DeviceConfig& config, AppState& state) {
         return;
     }
 
-    if (!state.provisioning_complete) {
-        handle_register(config, state);
-        state.provisioning_complete = config.device_secret.length() > 0;
+    // PT Portal verifies the QR when an employee scans it. A provisioned
+    // display does not POST to the legacy registration/heartbeat endpoints.
+    if (state.provisioning_complete) {
+        g_api_ok = api_endpoint_configured();
+        g_last_error = g_api_ok ? "" : "API endpoint is not configured";
         return;
     }
 
-    uint32_t now = millis();
-    if (now - g_last_config_ms > kConfigIntervalMs) {
-        g_last_config_ms = now;
-        handle_config(config, state);
+    if (portal_qr_contract()) {
+        g_api_ok = false;
+        g_last_error = "Device enrollment is required in PT-Portal";
+        return;
     }
 
-    if (g_force_notice || (now - g_last_notice_ms > kNoticeIntervalMs)) {
-        g_last_notice_ms = now;
-        handle_notices(config);
-        g_force_notice = false;
+    RegistrationTaskResult result;
+    if (g_registration_results && xQueueReceive(g_registration_results, &result, 0) == pdTRUE) {
+        apply_registration_result(config, state, result);
     }
+    if (state.provisioning_complete || g_registration_in_progress) {
+        return;
+    }
+    if (!api_endpoint_configured()) {
+        g_last_error = "API endpoint is not configured";
+        return;
+    }
+    if (millis() >= g_next_registration_ms) {
+        start_registration(config);
+    }
+    if (!state.provisioning_complete) {
+        return;
+    }
+}
 
-    if (now - g_last_heartbeat_ms > kHeartbeatIntervalMs) {
-        g_last_heartbeat_ms = now;
-        handle_heartbeat(config);
+bool service_http_registration_in_progress() {
+    return g_registration_in_progress;
+}
+
+void service_http_retry_registration() {
+    if (!g_registration_in_progress) {
+        g_next_registration_ms = 0;
+        g_last_error = "";
     }
 }
 

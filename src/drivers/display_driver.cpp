@@ -2,7 +2,10 @@
 
 #include <Arduino.h>
 #include <esp_heap_caps.h>
+#include <esp32s3/rom/cache.h>
 #include <Arduino_GFX_Library.h>
+
+#include <cstring>
 
 #include "pins.h"
 
@@ -45,18 +48,29 @@ void display_flush_cb(lv_disp_drv_t* disp, const lv_area_t* area, lv_color_t* co
         return;
     }
 
-    uint32_t w = area->x2 - area->x1 + 1;
-    uint32_t h = area->y2 - area->y1 + 1;
+    const uint32_t w = area->x2 - area->x1 + 1;
+    const uint32_t h = area->y2 - area->y1 + 1;
 
 #if (LV_COLOR_16_SWAP != 0)
     g_gfx->draw16bitBeRGBBitmap(area->x1, area->y1, reinterpret_cast<uint16_t*>(&color_p->full), w, h);
 #else
-    g_gfx->draw16bitRGBBitmap(area->x1, area->y1, reinterpret_cast<uint16_t*>(&color_p->full), w, h);
-#endif
+    uint16_t* framebuffer = g_gfx->getFramebuffer();
+    const uint16_t* source = reinterpret_cast<const uint16_t*>(&color_p->full);
+    if (framebuffer) {
+        uint16_t* destination = framebuffer + (area->y1 * kHorRes) + area->x1;
+        for (uint32_t row = 0; row < h; ++row) {
+            memcpy(destination + (row * kHorRes), source + (row * w), w * sizeof(uint16_t));
+        }
 
-    if (g_has_framebuffer && !kAutoFlush) {
-        g_gfx->flush();
+        const uintptr_t dirty_start = reinterpret_cast<uintptr_t>(destination);
+        const uintptr_t dirty_end = dirty_start + (((h - 1) * kHorRes + w) * sizeof(uint16_t));
+        const uintptr_t cache_start = dirty_start & ~static_cast<uintptr_t>(63);
+        const uintptr_t cache_end = (dirty_end + 63) & ~static_cast<uintptr_t>(63);
+        Cache_WriteBack_Addr(static_cast<uint32_t>(cache_start), static_cast<uint32_t>(cache_end - cache_start));
+    } else {
+        g_gfx->draw16bitRGBBitmap(area->x1, area->y1, const_cast<uint16_t*>(source), w, h);
     }
+#endif
 
     lv_disp_flush_ready(disp);
 }
@@ -150,6 +164,7 @@ void display_driver_set_backlight(bool on) {
     g_backlight_on = on;
     g_backlight_dimmed = false;
     apply_backlight_duty(on ? kBacklightDutyOn : 0);
+    Serial.printf("[DISPLAY] backlight=%s\n", on ? "on" : "off");
 }
 
 bool display_driver_is_backlight_on() {

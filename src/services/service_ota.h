@@ -15,6 +15,7 @@ bool service_ota_update_available();
 bool service_ota_update_ready();
 bool service_ota_reboot_required();
 String service_ota_github_status();
+bool service_ota_enabled();
 bool service_ota_ready();
 bool service_ota_updating();
 String service_ota_last_error();

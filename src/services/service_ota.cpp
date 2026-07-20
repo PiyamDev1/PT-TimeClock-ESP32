@@ -18,7 +18,7 @@ bool g_ready = false;
 bool g_updating = false;
 String g_last_error;
 String g_hostname;
-bool g_requested = false;
+bool g_requested = true;
 bool g_update_available = false;
 bool g_update_ready = false;
 bool g_reboot_required = false;
@@ -166,16 +166,24 @@ bool github_download_asset(const String& asset_url) {
 }
 
 void service_ota_init() {
+    g_requested = true;
+    g_ready = false;
+    g_updating = false;
+    g_last_error = "";
     ArduinoOTA.onStart([]() {
         g_updating = true;
+        Serial.println("[OTA] update started");
     });
     ArduinoOTA.onEnd([]() {
         g_updating = false;
+        Serial.println("[OTA] update complete");
     });
     ArduinoOTA.onError([](ota_error_t error) {
         g_last_error = String("OTA error ") + String(static_cast<int>(error));
         g_updating = false;
+        Serial.printf("[OTA] error=%u\n", static_cast<unsigned>(error));
     });
+    Serial.println("[OTA] enabled; waiting for Wi-Fi");
 }
 
 void service_ota_tick(DeviceConfig& config, AppState& state) {
@@ -193,6 +201,9 @@ void service_ota_tick(DeviceConfig& config, AppState& state) {
     if (g_requested && !g_ready) {
         ArduinoOTA.begin();
         g_ready = true;
+        g_last_error = "";
+        Serial.printf("[OTA] ready hostname=%s ip=%s\n",
+            g_hostname.c_str(), WiFi.localIP().toString().c_str());
     }
 
     if (g_ready) {
@@ -295,6 +306,10 @@ bool service_ota_reboot_required() {
 
 String service_ota_github_status() {
     return g_github_status;
+}
+
+bool service_ota_enabled() {
+    return g_requested;
 }
 
 bool service_ota_ready() {

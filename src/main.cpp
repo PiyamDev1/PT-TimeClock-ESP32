@@ -22,28 +22,27 @@ ptc::AppState g_state;
 
 namespace {
 
-constexpr uint32_t kScreenDimTimeoutMs = 60000;
-constexpr uint32_t kScreenOffTimeoutMs = 120000;
-constexpr uint32_t kUiTickIntervalMs = 16;
+constexpr uint32_t kScreenOffTimeoutMs = 60000;
 constexpr uint32_t kWifiTickIntervalMs = 25;
 constexpr uint32_t kTimeTickIntervalMs = 200;
 constexpr uint32_t kHttpTickIntervalMs = 40;
 constexpr uint32_t kQrTickIntervalMs = 80;
 constexpr uint32_t kLogTickIntervalMs = 120;
 constexpr uint32_t kOtaTickIntervalMs = 60;
-constexpr uint32_t kMaxLoopSleepMs = 40;
-constexpr uint32_t kTargetBusyPercent = 60;
+constexpr uint32_t kDisplayRefreshIntervalMs = 30;
+constexpr uint32_t kMaxUiSleepMs = 5;
 
 uint32_t g_last_input_ms = 0;
 bool g_display_ready = false;
 uint32_t g_last_heartbeat_ms = 0;
-uint32_t g_last_ui_tick_ms = 0;
 uint32_t g_last_wifi_tick_ms = 0;
 uint32_t g_last_time_tick_ms = 0;
 uint32_t g_last_http_tick_ms = 0;
 uint32_t g_last_qr_tick_ms = 0;
 uint32_t g_last_log_tick_ms = 0;
 uint32_t g_last_ota_tick_ms = 0;
+uint32_t g_last_display_refresh_ms = 0;
+lv_disp_t* g_display = nullptr;
 
 }
 
@@ -54,8 +53,7 @@ void setup() {
 
     ptc::service_storage_init();
     ptc::service_storage_load_config(g_config, g_state);
-    g_config.display_rotation = 90;
-    ptc::touch_driver_set_calibration(ptc::TouchCalibration{});
+    g_config.display_rotation = 270;
 
     ptc::service_wifi_init();
     ptc::service_time_init();
@@ -88,6 +86,7 @@ void setup() {
     }
 
     if (disp) {
+        g_display = disp;
         lv_disp_set_rotation(disp, g_config.display_rotation == 90
             ? LV_DISP_ROT_90
             : g_config.display_rotation == 180
@@ -99,6 +98,9 @@ void setup() {
 
     if (g_display_ready) {
         ptc::ui_root_init(g_config, g_state);
+        if (g_display && g_display->refr_timer) {
+            lv_timer_pause(g_display->refr_timer);
+        }
         Serial.println("[BOOT] UI root initialized");
     }
     g_last_input_ms = millis();
@@ -107,8 +109,27 @@ void setup() {
 }
 
 void loop() {
-    uint32_t loop_start_us = micros();
     uint32_t now_ms = millis();
+
+    if (g_display_ready) {
+        ptc::touch_driver_tick();
+
+        const bool wake_event = ptc::touch_driver_consume_wake_event();
+        const bool tap_event = ptc::touch_driver_consume_tap_event();
+        if (!ptc::display_driver_is_backlight_on()) {
+            if (wake_event || tap_event) {
+                ptc::touch_driver_suppress_until_release();
+                ptc::display_driver_set_render_enabled(true);
+                ptc::display_driver_set_backlight(true);
+                g_last_input_ms = now_ms;
+                lv_obj_invalidate(lv_scr_act());
+                lv_refr_now(g_display);
+                ptc::service_log_add("Display wake");
+            }
+        } else if (tap_event) {
+            g_last_input_ms = now_ms;
+        }
+    }
 
     if (now_ms - g_last_wifi_tick_ms >= kWifiTickIntervalMs) {
         g_last_wifi_tick_ms = now_ms;
@@ -135,16 +156,15 @@ void loop() {
         ptc::service_ota_tick(g_config, g_state);
     }
 
-    uint32_t lv_delay_ms = 5;
-    if (g_display_ready && now_ms - g_last_ui_tick_ms >= kUiTickIntervalMs) {
-        g_last_ui_tick_ms = now_ms;
+    uint32_t sleep_ms = 1;
+    if (g_display_ready) {
         uint32_t next = lv_timer_handler();
-        if (next < 2) {
-            lv_delay_ms = 2;
-        } else if (next > 10) {
-            lv_delay_ms = 10;
-        } else {
-            lv_delay_ms = next;
+        sleep_ms = next == 0 ? 1 : min(next, kMaxUiSleepMs);
+
+        if (ptc::display_driver_is_backlight_on() &&
+            now_ms - g_last_display_refresh_ms >= kDisplayRefreshIntervalMs) {
+            g_last_display_refresh_ms = now_ms;
+            lv_refr_now(g_display);
         }
     }
 
@@ -158,44 +178,15 @@ void loop() {
             static_cast<unsigned int>(ESP.getFreeHeap()));
     }
 
-    if (g_display_ready && ptc::touch_driver_consume_tap_event()) {
-        g_last_input_ms = millis();
-        if (!ptc::display_driver_is_backlight_on()) {
-            ptc::display_driver_set_backlight(true);
-            ptc::service_log_add("Display wake");
-        } else if (ptc::display_driver_is_backlight_dimmed()) {
-            ptc::display_driver_set_backlight_dimmed(false);
-            ptc::service_log_add("Display wake");
-        }
-    }
-
     uint32_t idle_ms = millis() - g_last_input_ms;
     if (g_display_ready && ptc::display_driver_is_backlight_on()) {
-        if (!ptc::display_driver_is_backlight_dimmed() && idle_ms > kScreenDimTimeoutMs) {
-            ptc::display_driver_set_backlight_dimmed(true);
-            ptc::service_log_add("Display dim");
-        }
-
-        if (ptc::display_driver_is_backlight_dimmed() && idle_ms > kScreenOffTimeoutMs) {
+        if (idle_ms > kScreenOffTimeoutMs) {
+            ptc::touch_driver_prepare_for_screen_off();
+            ptc::display_driver_set_render_enabled(false);
             ptc::display_driver_set_backlight(false);
             ptc::service_log_add("Display sleep");
         }
     }
 
-    uint32_t busy_us = micros() - loop_start_us;
-    uint32_t target_total_us = (busy_us * 100U) / kTargetBusyPercent;
-    if (target_total_us < busy_us) {
-        target_total_us = busy_us;
-    }
-    uint32_t reserve_sleep_us = target_total_us - busy_us;
-    uint32_t reserve_sleep_ms = reserve_sleep_us / 1000U;
-    if (reserve_sleep_ms > kMaxLoopSleepMs) {
-        reserve_sleep_ms = kMaxLoopSleepMs;
-    }
-
-    uint32_t sleep_ms = lv_delay_ms;
-    if (reserve_sleep_ms > sleep_ms) {
-        sleep_ms = reserve_sleep_ms;
-    }
     delay(sleep_ms);
 }

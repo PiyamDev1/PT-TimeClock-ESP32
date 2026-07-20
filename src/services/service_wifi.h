@@ -11,6 +11,7 @@ bool service_wifi_is_connected();
 bool service_wifi_portal_active();
 void service_wifi_connect(const String& ssid, const String& password);
 bool service_wifi_is_connecting();
+String service_wifi_connection_message();
 void service_wifi_clear_credentials();
 
 } // namespace ptc

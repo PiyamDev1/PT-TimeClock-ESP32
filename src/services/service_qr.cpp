@@ -77,8 +77,10 @@ void generate_payload(DeviceConfig& config) {
 
     String json;
     serializeJson(doc, json);
-    g_payload = String("ptc1:") + json;
-    g_manual_code = message;
+    const String encoded = base64url_encode(
+        reinterpret_cast<const uint8_t*>(json.c_str()), json.length());
+    g_payload = encoded.isEmpty() ? "" : String("ptc1:") + encoded;
+    g_manual_code = "";
 }
 
 } // namespace

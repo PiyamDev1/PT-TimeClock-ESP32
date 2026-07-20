@@ -5,6 +5,8 @@
 #include "services/service_http.h"
 #include "services/service_ota.h"
 #include "drivers/touch_driver.h"
+#include "ui_root.h"
+#include "ui_theme.h"
 
 #include <Arduino.h>
 
@@ -191,8 +193,8 @@ lv_obj_t* create_field(lv_obj_t* parent, const char* label, const char* value) {
     lv_obj_t* row = lv_obj_create(parent);
     lv_obj_set_width(row, lv_pct(100));
     lv_obj_set_height(row, 64);
-    lv_obj_set_style_bg_color(row, lv_color_hex(0x0E1C25), 0);
-    lv_obj_set_style_border_color(row, lv_color_hex(0x1C3442), 0);
+    lv_obj_set_style_bg_color(row, theme::surface(), 0);
+    lv_obj_set_style_border_color(row, theme::border(), 0);
     lv_obj_set_style_border_width(row, 1, 0);
     lv_obj_set_style_radius(row, 14, 0);
     lv_obj_set_style_pad_hor(row, 14, 0);
@@ -202,11 +204,11 @@ lv_obj_t* create_field(lv_obj_t* parent, const char* label, const char* value) {
 
     lv_obj_t* title = lv_label_create(row);
     lv_label_set_text(title, label);
-    lv_obj_set_style_text_color(title, lv_color_hex(0x8FB1C0), 0);
+    lv_obj_set_style_text_color(title, theme::text_muted(), 0);
 
     lv_obj_t* val = lv_label_create(row);
     lv_label_set_text(val, value);
-    lv_obj_set_style_text_color(val, lv_color_hex(0xE9F5F9), 0);
+    lv_obj_set_style_text_color(val, theme::white(), 0);
 
     return row;
 }
@@ -216,7 +218,7 @@ lv_obj_t* create_action(lv_obj_t* parent, const char* text) {
     lv_obj_set_width(btn, lv_pct(100));
     lv_obj_set_height(btn, 60);
     lv_obj_set_style_radius(btn, 16, 0);
-    lv_obj_set_style_bg_color(btn, lv_color_hex(0x153040), 0);
+    lv_obj_set_style_bg_color(btn, theme::maroon(), 0);
     lv_obj_t* label = lv_label_create(btn);
     lv_label_set_text(label, text);
     return btn;
@@ -232,7 +234,7 @@ void ui_settings_build(lv_obj_t* parent, DeviceConfig& config, AppState& state) 
 
     lv_obj_t* title = lv_label_create(parent);
     lv_label_set_text(title, "Settings");
-    lv_obj_set_style_text_color(title, lv_color_hex(0xE9F5F9), 0);
+    lv_obj_set_style_text_color(title, theme::white(), 0);
 
     const char* device_id = config.device_id.length() ? config.device_id.c_str() : "ESP32S3-XXXX";
     const char* location = config.location_name.length() ? config.location_name.c_str() : "Not assigned";
@@ -253,8 +255,8 @@ void ui_settings_build(lv_obj_t* parent, DeviceConfig& config, AppState& state) 
     lv_obj_t* rotation_row = lv_obj_create(parent);
     lv_obj_set_width(rotation_row, lv_pct(100));
     lv_obj_set_height(rotation_row, 70);
-    lv_obj_set_style_bg_color(rotation_row, lv_color_hex(0x0E1C25), 0);
-    lv_obj_set_style_border_color(rotation_row, lv_color_hex(0x1C3442), 0);
+    lv_obj_set_style_bg_color(rotation_row, theme::surface(), 0);
+    lv_obj_set_style_border_color(rotation_row, theme::border(), 0);
     lv_obj_set_style_border_width(rotation_row, 1, 0);
     lv_obj_set_style_radius(rotation_row, 14, 0);
     lv_obj_set_style_pad_hor(rotation_row, 14, 0);
@@ -264,7 +266,7 @@ void ui_settings_build(lv_obj_t* parent, DeviceConfig& config, AppState& state) 
 
     lv_obj_t* rotation_label = lv_label_create(rotation_row);
     lv_label_set_text(rotation_label, "Display rotation");
-    lv_obj_set_style_text_color(rotation_label, lv_color_hex(0x8FB1C0), 0);
+    lv_obj_set_style_text_color(rotation_label, theme::text_muted(), 0);
 
     static RotationContext rotation_ctx;
     rotation_ctx.config = &config;
@@ -293,7 +295,7 @@ void ui_settings_build(lv_obj_t* parent, DeviceConfig& config, AppState& state) 
 
     lv_obj_t* wifi_btn = create_action(parent, LV_SYMBOL_WIFI " Configure Wi-Fi");
     lv_obj_add_event_cb(wifi_btn, [](lv_event_t*) {
-        service_wifi_start_portal();
+        ui_root_open_wifi_setup();
     }, LV_EVENT_CLICKED, nullptr);
 
     lv_obj_t* time_btn = create_action(parent, LV_SYMBOL_REFRESH " Sync time");
@@ -304,8 +306,8 @@ void ui_settings_build(lv_obj_t* parent, DeviceConfig& config, AppState& state) 
     lv_obj_t* interval_row = lv_obj_create(parent);
     lv_obj_set_width(interval_row, lv_pct(100));
     lv_obj_set_height(interval_row, 70);
-    lv_obj_set_style_bg_color(interval_row, lv_color_hex(0x0E1C25), 0);
-    lv_obj_set_style_border_color(interval_row, lv_color_hex(0x1C3442), 0);
+    lv_obj_set_style_bg_color(interval_row, theme::surface(), 0);
+    lv_obj_set_style_border_color(interval_row, theme::border(), 0);
     lv_obj_set_style_border_width(interval_row, 1, 0);
     lv_obj_set_style_radius(interval_row, 14, 0);
     lv_obj_set_style_pad_hor(interval_row, 14, 0);
@@ -315,7 +317,7 @@ void ui_settings_build(lv_obj_t* parent, DeviceConfig& config, AppState& state) 
 
     lv_obj_t* interval_label = lv_label_create(interval_row);
     lv_label_set_text(interval_label, "QR refresh interval");
-    lv_obj_set_style_text_color(interval_label, lv_color_hex(0x8FB1C0), 0);
+    lv_obj_set_style_text_color(interval_label, theme::text_muted(), 0);
 
     lv_obj_t* dropdown = lv_dropdown_create(interval_row);
     lv_dropdown_set_options(dropdown, "5s\n10s\n20s\n30s");
@@ -352,13 +354,8 @@ void ui_settings_build(lv_obj_t* parent, DeviceConfig& config, AppState& state) 
     lv_obj_t* api_row = create_field(parent, "API endpoint", "Checking...");
     ui.api_value = lv_obj_get_child(api_row, 1);
 
-    lv_obj_t* ota_row = create_field(parent, "OTA updates", "Off");
+    lv_obj_t* ota_row = create_field(parent, "OTA updates", "Starting...");
     ui.ota_value = lv_obj_get_child(ota_row, 1);
-
-    ui.ota_button = create_action(parent, LV_SYMBOL_UPLOAD " Enable OTA");
-    lv_obj_add_event_cb(ui.ota_button, [](lv_event_t*) {
-        service_ota_request_start();
-    }, LV_EVENT_CLICKED, nullptr);
 
     lv_obj_t* github_row = create_field(parent, "GitHub update", "Idle");
     ui.github_value = lv_obj_get_child(github_row, 1);
@@ -381,50 +378,17 @@ void ui_settings_build(lv_obj_t* parent, DeviceConfig& config, AppState& state) 
     }, LV_EVENT_CLICKED, nullptr);
     lv_obj_add_flag(ui.github_apply_button, LV_OBJ_FLAG_HIDDEN);
 
-    lv_obj_t* calibrate_btn = create_action(parent, LV_SYMBOL_EDIT " Calibrate touch");
-
     ui.toast = lv_label_create(parent);
     lv_label_set_text(ui.toast, "Saved");
-    lv_obj_set_style_bg_color(ui.toast, lv_color_hex(0x0A1218), 0);
+    lv_obj_set_style_bg_color(ui.toast, theme::maroon(), 0);
     lv_obj_set_style_bg_opa(ui.toast, LV_OPA_80, 0);
-    lv_obj_set_style_text_color(ui.toast, lv_color_hex(0xE9F5F9), 0);
+    lv_obj_set_style_text_color(ui.toast, theme::white(), 0);
     lv_obj_set_style_pad_hor(ui.toast, 14, 0);
     lv_obj_set_style_pad_ver(ui.toast, 8, 0);
     lv_obj_set_style_radius(ui.toast, 10, 0);
     lv_obj_add_flag(ui.toast, LV_OBJ_FLAG_HIDDEN);
 
     rotation_ctx.toast = ui.toast;
-
-    ui.calib_overlay = lv_obj_create(lv_scr_act());
-    lv_obj_set_size(ui.calib_overlay, lv_disp_get_hor_res(NULL), lv_disp_get_ver_res(NULL));
-    lv_obj_set_style_bg_color(ui.calib_overlay, lv_color_hex(0x0A1218), 0);
-    lv_obj_set_style_bg_opa(ui.calib_overlay, LV_OPA_90, 0);
-    lv_obj_clear_flag(ui.calib_overlay, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_flag(ui.calib_overlay, LV_OBJ_FLAG_HIDDEN);
-
-    ui.calib_hint = lv_label_create(ui.calib_overlay);
-    lv_label_set_text(ui.calib_hint, "Tap the top-left X");
-    lv_obj_align(ui.calib_hint, LV_ALIGN_TOP_MID, 0, 16);
-    lv_obj_set_style_text_color(ui.calib_hint, lv_color_hex(0xE9F5F9), 0);
-
-    ui.calib_target = lv_label_create(ui.calib_overlay);
-    lv_label_set_text(ui.calib_target, "X");
-    lv_obj_set_style_text_color(ui.calib_target, lv_color_hex(0xFF5A5A), 0);
-    lv_obj_set_style_text_font(ui.calib_target, LV_FONT_DEFAULT, 0);
-
-    ui.calib_timer = lv_timer_create(calibration_timer_cb, 30, &ui);
-
-    lv_obj_add_event_cb(calibrate_btn, [](lv_event_t* event) {
-        auto* ui_ptr = static_cast<SettingsUi*>(lv_event_get_user_data(event));
-        if (!ui_ptr || !ui_ptr->calib_overlay) {
-            return;
-        }
-
-        ui_ptr->calib_step = 0;
-        ui_ptr->calib_touch_held = false;
-        lv_obj_clear_flag(ui_ptr->calib_overlay, LV_OBJ_FLAG_HIDDEN);
-        calibration_update_target(*ui_ptr);
-    }, LV_EVENT_CLICKED, &ui);
 
     lv_obj_t* revoke_btn = create_action(parent, LV_SYMBOL_WARNING " Revoke device");
     lv_obj_add_event_cb(revoke_btn, [](lv_event_t*) {
@@ -435,7 +399,7 @@ void ui_settings_build(lv_obj_t* parent, DeviceConfig& config, AppState& state) 
 
     lv_timer_create([](lv_timer_t* timer) {
         auto* ui_ptr = static_cast<SettingsUi*>(timer->user_data);
-        if (!ui_ptr) {
+        if (!ui_ptr || !ui_ptr->wifi_value || !lv_obj_is_visible(ui_ptr->wifi_value)) {
             return;
         }
 
@@ -449,7 +413,7 @@ void ui_settings_build(lv_obj_t* parent, DeviceConfig& config, AppState& state) 
 
         if (ui_ptr->api_value) {
             if (service_http_api_ok()) {
-                lv_label_set_text(ui_ptr->api_value, "Reachable");
+                lv_label_set_text(ui_ptr->api_value, "Configured");
             } else {
                 String err = service_http_last_error();
                 if (err.length() == 0) {
@@ -465,6 +429,8 @@ void ui_settings_build(lv_obj_t* parent, DeviceConfig& config, AppState& state) 
                 lv_label_set_text(ui_ptr->ota_value, "Updating...");
             } else if (service_ota_ready()) {
                 lv_label_set_text(ui_ptr->ota_value, "Ready");
+            } else if (service_ota_enabled()) {
+                lv_label_set_text(ui_ptr->ota_value, "Waiting for Wi-Fi");
             } else {
                 lv_label_set_text(ui_ptr->ota_value, "Off");
             }

@@ -21,6 +21,10 @@ Hardware assumptions
 - Capacitive touch controller (typical: GT911 or FT5x06)
 - Portrait mounting (rotate display + touch accordingly)
 - External power (stable 5V USB or 5V DC)
+- Hardware revision note: R5 has been removed and the R17 resistor pads have been bridged.
+  - This connects the GT911 interrupt output to GPIO18 and removes the conflicting pull-up.
+  - GPIO2 remains the LCD backlight control, with HIGH = on and LOW = off.
+  - The firmware uses the touch interrupt to wake the display after switching the backlight off.
 
 Stack
 - PlatformIO + Arduino framework
@@ -241,6 +245,7 @@ Testing checklist
 
 Open questions
 - Exact panel pinout and touch controller type
+- Confirm what the R5 removal + R17 bridge changes electrically: backlight always-on, alternate backlight enable path, or another display power rail change.
 - API endpoints for notices and logs
 - Whether QR payload should include location or device-specific metadata
 

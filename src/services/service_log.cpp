@@ -18,6 +18,7 @@ struct LogEntry {
 
 std::vector<LogEntry> g_entries;
 uint16_t g_dirty_count = 0;
+uint32_t g_revision = 0;
 constexpr uint16_t kFlushEveryN = 5;
 
 void save_logs_to_nvs() {
@@ -67,6 +68,7 @@ void service_log_add(const String& message) {
     entry.ts = static_cast<uint32_t>(time(nullptr));
     entry.message = message;
     g_entries.push_back(entry);
+    g_revision++;
 
     g_dirty_count++;
     if (g_dirty_count >= kFlushEveryN) {
@@ -76,6 +78,10 @@ void service_log_add(const String& message) {
 
 uint16_t service_log_count() {
     return static_cast<uint16_t>(g_entries.size());
+}
+
+uint32_t service_log_revision() {
+    return g_revision;
 }
 
 bool service_log_get(uint16_t index, uint32_t& ts_out, String& msg_out) {

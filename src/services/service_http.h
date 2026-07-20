@@ -6,6 +6,8 @@ namespace ptc {
 
 void service_http_init();
 void service_http_tick(DeviceConfig& config, AppState& state);
+bool service_http_registration_in_progress();
+void service_http_retry_registration();
 void service_http_force_notices_fetch();
 bool service_http_has_notices();
 uint16_t service_http_notice_count();

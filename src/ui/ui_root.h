@@ -6,5 +6,6 @@
 namespace ptc {
 
 void ui_root_init(DeviceConfig& config, AppState& state);
+void ui_root_open_wifi_setup();
 
 } // namespace ptc

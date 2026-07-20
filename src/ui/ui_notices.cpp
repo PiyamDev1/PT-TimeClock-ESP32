@@ -2,6 +2,7 @@
 
 #include "services/service_http.h"
 #include "services/service_wifi.h"
+#include "ui_theme.h"
 
 #include <time.h>
 
@@ -12,31 +13,21 @@ namespace {
 struct NoticesUi {
     lv_obj_t* list = nullptr;
     lv_obj_t* offline = nullptr;
+    uint32_t rendered_timestamp = UINT32_MAX;
+    uint16_t rendered_count = UINT16_MAX;
 };
 
 void animate_fade_in(lv_obj_t* obj, uint32_t delay_ms) {
-    if (!obj) {
-        return;
-    }
-    lv_obj_set_style_opa(obj, LV_OPA_0, 0);
-    lv_anim_t anim;
-    lv_anim_init(&anim);
-    lv_anim_set_var(&anim, obj);
-    lv_anim_set_values(&anim, 0, 255);
-    lv_anim_set_time(&anim, 220);
-    lv_anim_set_delay(&anim, delay_ms);
-    lv_anim_set_exec_cb(&anim, [](void* target, int32_t value) {
-        lv_obj_set_style_opa(static_cast<lv_obj_t*>(target), value, 0);
-    });
-    lv_anim_start(&anim);
+    LV_UNUSED(obj);
+    LV_UNUSED(delay_ms);
 }
 
 lv_obj_t* create_notice_card(lv_obj_t* parent, const char* title, const char* time, const char* body) {
     lv_obj_t* card = lv_obj_create(parent);
     lv_obj_set_width(card, lv_pct(100));
     lv_obj_set_style_radius(card, 14, 0);
-    lv_obj_set_style_bg_color(card, lv_color_hex(0x0E1C25), 0);
-    lv_obj_set_style_border_color(card, lv_color_hex(0x1C3442), 0);
+    lv_obj_set_style_bg_color(card, theme::surface(), 0);
+    lv_obj_set_style_border_color(card, theme::border(), 0);
     lv_obj_set_style_border_width(card, 1, 0);
     lv_obj_set_style_pad_all(card, 14, 0);
     lv_obj_set_style_pad_row(card, 8, 0);
@@ -45,16 +36,16 @@ lv_obj_t* create_notice_card(lv_obj_t* parent, const char* title, const char* ti
 
     lv_obj_t* title_label = lv_label_create(card);
     lv_label_set_text(title_label, title);
-    lv_obj_set_style_text_color(title_label, lv_color_hex(0xE9F5F9), 0);
+    lv_obj_set_style_text_color(title_label, theme::white(), 0);
 
     lv_obj_t* time_label = lv_label_create(card);
     lv_label_set_text(time_label, time);
-    lv_obj_set_style_text_color(time_label, lv_color_hex(0x8FB1C0), 0);
+    lv_obj_set_style_text_color(time_label, theme::text_muted(), 0);
 
     lv_obj_t* body_label = lv_label_create(card);
     lv_label_set_text(body_label, body);
     lv_label_set_long_mode(body_label, LV_LABEL_LONG_WRAP);
-    lv_obj_set_style_text_color(body_label, lv_color_hex(0xC9DCE4), 0);
+    lv_obj_set_style_text_color(body_label, theme::text_soft(), 0);
 
     return card;
 }
@@ -83,12 +74,12 @@ void ui_notices_build(lv_obj_t* parent, const DeviceConfig& config, AppState& st
 
     lv_obj_t* title = lv_label_create(header);
     lv_label_set_text(title, "Notices");
-    lv_obj_set_style_text_color(title, lv_color_hex(0xE9F5F9), 0);
+    lv_obj_set_style_text_color(title, theme::white(), 0);
 
     lv_obj_t* refresh_btn = lv_btn_create(header);
     lv_obj_set_height(refresh_btn, 40);
     lv_obj_set_style_radius(refresh_btn, 12, 0);
-    lv_obj_set_style_bg_color(refresh_btn, lv_color_hex(0x153040), 0);
+    lv_obj_set_style_bg_color(refresh_btn, theme::maroon(), 0);
     lv_obj_t* refresh_label = lv_label_create(refresh_btn);
     lv_label_set_text(refresh_label, LV_SYMBOL_REFRESH " Refresh");
     lv_obj_add_event_cb(refresh_btn, [](lv_event_t*) {
@@ -97,7 +88,7 @@ void ui_notices_build(lv_obj_t* parent, const DeviceConfig& config, AppState& st
 
     ui.offline = lv_label_create(parent);
     lv_label_set_text(ui.offline, "Offline, showing cached notices");
-    lv_obj_set_style_text_color(ui.offline, lv_color_hex(0x8FB1C0), 0);
+    lv_obj_set_style_text_color(ui.offline, theme::text_muted(), 0);
 
     ui.list = lv_obj_create(parent);
     lv_obj_set_width(ui.list, lv_pct(100));
@@ -108,7 +99,7 @@ void ui_notices_build(lv_obj_t* parent, const DeviceConfig& config, AppState& st
 
     lv_timer_create([](lv_timer_t* timer) {
         auto* ui_ptr = static_cast<NoticesUi*>(timer->user_data);
-        if (!ui_ptr || !ui_ptr->list) {
+        if (!ui_ptr || !ui_ptr->list || !lv_obj_is_visible(ui_ptr->list)) {
             return;
         }
 
@@ -130,6 +121,13 @@ void ui_notices_build(lv_obj_t* parent, const DeviceConfig& config, AppState& st
             }
         }
 
+        uint16_t notice_count = service_http_notice_count();
+        if (ui_ptr->rendered_timestamp == last_ts && ui_ptr->rendered_count == notice_count) {
+            return;
+        }
+        ui_ptr->rendered_timestamp = last_ts;
+        ui_ptr->rendered_count = notice_count;
+
         lv_obj_clean(ui_ptr->list);
         if (!service_http_has_notices()) {
             lv_obj_t* card = create_notice_card(ui_ptr->list, "No notices", "", "Notices will appear here once synced.");
@@ -137,8 +135,7 @@ void ui_notices_build(lv_obj_t* parent, const DeviceConfig& config, AppState& st
             return;
         }
 
-        uint16_t count = service_http_notice_count();
-        for (uint16_t i = 0; i < count; ++i) {
+        for (uint16_t i = 0; i < notice_count; ++i) {
             Notice notice;
             if (service_http_get_notice(i, notice)) {
                 lv_obj_t* card = create_notice_card(ui_ptr->list,
