@@ -1,60 +1,24 @@
 #include "service_qr.h"
 
 #include <ArduinoJson.h>
-#include <mbedtls/md.h>
-#include <mbedtls/base64.h>
-#include <vector>
 #include <time.h>
 #include <esp_system.h>
 
+#include "service_auth.h"
 #include "service_log.h"
 
 namespace ptc {
 
 namespace {
 
+constexpr uint32_t kMinimumPairingLifetimeSec = 30;
+
 String g_payload;
 uint32_t g_last_gen_ms = 0;
 uint32_t g_interval_sec = kDefaultQrIntervalSec;
 
-String base64url_encode(const uint8_t* data, size_t len) {
-    size_t out_len = 0;
-    size_t buf_len = ((len + 2) / 3) * 4 + 1;
-    std::vector<uint8_t> out(buf_len);
-
-    if (mbedtls_base64_encode(out.data(), out.size(), &out_len, data, len) != 0) {
-        return "";
-    }
-
-    String encoded(reinterpret_cast<char*>(out.data()), out_len);
-    encoded.replace("+", "-");
-    encoded.replace("/", "_");
-    encoded.replace("=", "");
-    return encoded;
-}
-
-String hmac_sha256_base64url(const String& secret, const String& message) {
-    uint8_t output[32];
-    mbedtls_md_context_t ctx;
-    mbedtls_md_init(&ctx);
-    const mbedtls_md_info_t* info = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
-    mbedtls_md_setup(&ctx, info, 1);
-    mbedtls_md_hmac_starts(&ctx, reinterpret_cast<const uint8_t*>(secret.c_str()), secret.length());
-    mbedtls_md_hmac_update(&ctx, reinterpret_cast<const uint8_t*>(message.c_str()), message.length());
-    mbedtls_md_hmac_finish(&ctx, output);
-    mbedtls_md_free(&ctx);
-
-    return base64url_encode(output, sizeof(output));
-}
-
 String random_nonce() {
-    const char* chars = "abcdefghijklmnopqrstuvwxyz0123456789";
-    String out;
-    for (int i = 0; i < 10; ++i) {
-        int idx = random(0, 36);
-        out += chars[idx];
-    }
-    return out;
+    return service_auth_random_nonce(12);
 }
 
 void generate_payload(DeviceConfig& config) {
@@ -65,7 +29,7 @@ void generate_payload(DeviceConfig& config) {
     uint32_t ts = static_cast<uint32_t>(time(nullptr));
     String nonce = random_nonce();
     String message = config.device_id + "." + String(ts) + "." + nonce;
-    String sig = hmac_sha256_base64url(config.device_secret, message);
+    String sig = service_auth_hmac_sha256_base64url(config.device_secret, message);
 
     StaticJsonDocument<256> doc;
     doc["v"] = 1;
@@ -76,7 +40,7 @@ void generate_payload(DeviceConfig& config) {
 
     String json;
     serializeJson(doc, json);
-    const String encoded = base64url_encode(
+    const String encoded = service_auth_base64url_encode(
         reinterpret_cast<const uint8_t*>(json.c_str()), json.length());
     g_payload = encoded.isEmpty() ? "" : String("ptc1:") + encoded;
 }
@@ -93,7 +57,11 @@ void service_qr_tick(DeviceConfig& config, AppState& state) {
         return;
     }
 
-    g_interval_sec = config.qr_interval_sec ? config.qr_interval_sec : kDefaultQrIntervalSec;
+    const uint32_t configured_interval = config.qr_interval_sec
+        ? config.qr_interval_sec
+        : kDefaultQrIntervalSec;
+    // Manual codes are bound to this payload and remain valid for 30 seconds.
+    g_interval_sec = max(configured_interval, kMinimumPairingLifetimeSec);
     uint32_t interval_ms = g_interval_sec * 1000;
     if (!g_payload.isEmpty() && millis() - g_last_gen_ms < interval_ms) {
         return;

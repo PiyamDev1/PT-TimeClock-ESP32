@@ -8,6 +8,7 @@
 
 #include <qrcode.h>
 
+#include "services/service_http.h"
 #include "services/service_qr.h"
 #include "ui_theme.h"
 
@@ -21,6 +22,7 @@ struct QrUi {
     lv_obj_t* canvas = nullptr;
     lv_color_t* canvas_buf = nullptr;
     lv_obj_t* qr_box = nullptr;
+    lv_obj_t* code_value = nullptr;
     lv_obj_t* arc = nullptr;
     lv_obj_t* countdown = nullptr;
     lv_obj_t* qr_label = nullptr;
@@ -153,9 +155,9 @@ void ui_qr_build(lv_obj_t* parent, const DeviceConfig& config, AppState& state) 
     lv_label_set_text(code_hint, "Manual code");
     lv_obj_set_style_text_color(code_hint, theme::text_muted(), 0);
 
-    lv_obj_t* code_value = lv_label_create(code_box);
-    lv_label_set_text(code_value, "Unavailable");
-    lv_obj_set_style_text_color(code_value, theme::text_soft(), 0);
+    ui.code_value = lv_label_create(code_box);
+    lv_label_set_text(ui.code_value, "Unavailable");
+    lv_obj_set_style_text_color(ui.code_value, theme::text_soft(), 0);
 
     lv_timer_create([](lv_timer_t* timer) {
         auto* ui_ptr = static_cast<QrUi*>(timer->user_data);
@@ -197,6 +199,20 @@ void ui_qr_build(lv_obj_t* parent, const DeviceConfig& config, AppState& state) 
                 lv_obj_clear_flag(ui_ptr->canvas, LV_OBJ_FLAG_HIDDEN);
             } else {
                 lv_obj_add_flag(ui_ptr->canvas, LV_OBJ_FLAG_HIDDEN);
+            }
+        }
+
+        if (ui_ptr->code_value) {
+            const String code = service_http_manual_code_display();
+            if (!code.isEmpty()) {
+                lv_label_set_text(ui_ptr->code_value, code.c_str());
+                lv_obj_set_style_text_color(ui_ptr->code_value, theme::white(), 0);
+            } else if (service_http_manual_code_pending()) {
+                lv_label_set_text(ui_ptr->code_value, "Loading...");
+                lv_obj_set_style_text_color(ui_ptr->code_value, theme::text_soft(), 0);
+            } else {
+                lv_label_set_text(ui_ptr->code_value, "Unavailable");
+                lv_obj_set_style_text_color(ui_ptr->code_value, theme::text_soft(), 0);
             }
         }
     }, 1000, &ui);

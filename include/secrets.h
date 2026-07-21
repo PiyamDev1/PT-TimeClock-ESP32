@@ -7,8 +7,8 @@ namespace secrets {
 #define PTC_STRINGIFY_IMPL(x) #x
 #define PTC_STRINGIFY(x) PTC_STRINGIFY_IMPL(x)
 
-#ifndef PTC_API_BASE_URL
-#define PTC_API_BASE_URL https://ims.piyamtravel.com
+#ifndef PTC_API_BASE_URL_STRING
+#define PTC_API_BASE_URL_STRING "https://ims.piyamtravel.com"
 #endif
 
 #ifndef PTC_DEVICE_ID
@@ -31,7 +31,7 @@ namespace secrets {
 #define PTC_DEFAULT_WIFI_PASSWORD
 #endif
 
-static constexpr const char* kApiBaseUrl = PTC_STRINGIFY(PTC_API_BASE_URL);
+static constexpr const char* kApiBaseUrl = PTC_API_BASE_URL_STRING;
 static constexpr const char* kDefaultDeviceId = PTC_STRINGIFY(PTC_DEVICE_ID);
 static constexpr const char* kDefaultDeviceSecret = PTC_STRINGIFY(PTC_DEVICE_SECRET);
 static constexpr const char* kDefaultDeviceLocation = PTC_STRINGIFY(PTC_DEVICE_LOCATION);

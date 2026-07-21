@@ -51,7 +51,12 @@ struct Notice {
     String id;
     String title;
     String body;
+    String image_url;
+    String hyperlink_url;
+    uint16_t display_seconds = 6;
+    int16_t sort_order = 0;
     String created_at;
+    String updated_at;
 };
 
 } // namespace ptc

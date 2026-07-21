@@ -37,7 +37,8 @@ if github_token:
 
 api_base_url = values.get("PTC_API_BASE_URL", "")
 if api_base_url:
-    env.Append(CPPDEFINES=[("PTC_API_BASE_URL", api_base_url)])
+    escaped_api_base_url = api_base_url.replace("\\", "\\\\").replace('"', '\\"')
+    env.Append(CPPDEFINES=[("PTC_API_BASE_URL_STRING", f'\\"{escaped_api_base_url}\\"')])
 
 device_id = values.get("PTC_DEVICE_ID", "")
 device_secret = values.get("PTC_DEVICE_SECRET", "")

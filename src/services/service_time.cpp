@@ -11,7 +11,7 @@ namespace {
 
 constexpr int kGmtOffsetSec = 0;
 constexpr int kDaylightOffsetSec = 0;
-constexpr uint32_t kSyncRetryMs = 30000;
+constexpr uint32_t kSyncRetryMs = 5000;
 uint32_t g_last_sync_ms = 0;
 
 bool is_time_valid() {
@@ -28,8 +28,20 @@ void service_time_init() {
 void service_time_tick(DeviceConfig& config, AppState& state) {
     (void)config;
 
-    if (state.time_sync_ok) {
+    if (is_time_valid()) {
+        if (!state.time_sync_ok) {
+            state.time_sync_ok = true;
+            service_storage_save_time_sync(true);
+            service_log_add("Time synced");
+            Serial.printf("[TIME] synced epoch=%lu\n",
+                static_cast<unsigned long>(time(nullptr)));
+        }
         return;
+    }
+
+    if (state.time_sync_ok) {
+        state.time_sync_ok = false;
+        service_storage_save_time_sync(false);
     }
 
     if (millis() - g_last_sync_ms < kSyncRetryMs) {
@@ -37,15 +49,12 @@ void service_time_tick(DeviceConfig& config, AppState& state) {
     }
 
     g_last_sync_ms = millis();
-    if (is_time_valid()) {
-        state.time_sync_ok = true;
-        service_storage_save_time_sync(true);
-        service_log_add("Time synced");
-    }
+    configTime(kGmtOffsetSec, kDaylightOffsetSec, "pool.ntp.org", "time.nist.gov");
+    Serial.println("[TIME] waiting for SNTP");
 }
 
 void service_time_force_sync() {
-    g_last_sync_ms = 0;
+    g_last_sync_ms = millis() - kSyncRetryMs;
     configTime(kGmtOffsetSec, kDaylightOffsetSec, "pool.ntp.org", "time.nist.gov");
 }
 
