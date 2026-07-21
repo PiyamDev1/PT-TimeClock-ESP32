@@ -14,7 +14,6 @@ namespace ptc {
 namespace {
 
 String g_payload;
-String g_manual_code;
 uint32_t g_last_gen_ms = 0;
 uint32_t g_interval_sec = kDefaultQrIntervalSec;
 
@@ -80,7 +79,6 @@ void generate_payload(DeviceConfig& config) {
     const String encoded = base64url_encode(
         reinterpret_cast<const uint8_t*>(json.c_str()), json.length());
     g_payload = encoded.isEmpty() ? "" : String("ptc1:") + encoded;
-    g_manual_code = "";
 }
 
 } // namespace
@@ -92,13 +90,12 @@ void service_qr_init() {
 void service_qr_tick(DeviceConfig& config, AppState& state) {
     if (!state.time_sync_ok || !state.device_active || config.device_secret.length() == 0) {
         g_payload = "";
-        g_manual_code = "";
         return;
     }
 
     g_interval_sec = config.qr_interval_sec ? config.qr_interval_sec : kDefaultQrIntervalSec;
     uint32_t interval_ms = g_interval_sec * 1000;
-    if (millis() - g_last_gen_ms < interval_ms) {
+    if (!g_payload.isEmpty() && millis() - g_last_gen_ms < interval_ms) {
         return;
     }
 
@@ -111,17 +108,12 @@ String service_qr_payload() {
     return g_payload;
 }
 
-String service_qr_manual_code() {
-    return g_manual_code;
-}
-
 uint32_t service_qr_seconds_remaining() {
-    if (g_interval_sec == 0) {
+    if (g_interval_sec == 0 || g_payload.isEmpty()) {
         return 0;
     }
-    uint32_t elapsed = millis() / 1000;
-    uint32_t remain = g_interval_sec - (elapsed % g_interval_sec);
-    return remain == g_interval_sec ? 0 : remain;
+    const uint32_t elapsed = (millis() - g_last_gen_ms) / 1000;
+    return elapsed >= g_interval_sec ? 0 : g_interval_sec - elapsed;
 }
 
 uint32_t service_qr_interval_sec() {

@@ -218,7 +218,12 @@ void service_storage_load_config(DeviceConfig& config, AppState& state) {
     bool seeded_device = false;
     const bool has_default_identity =
         strlen(secrets::kDefaultDeviceId) > 0 && strlen(secrets::kDefaultDeviceSecret) > 0;
-    if (has_default_identity && (config.device_id.isEmpty() || config.device_secret.isEmpty())) {
+    const bool stored_identity_matches_default =
+        !config.device_id.isEmpty() && config.device_id == secrets::kDefaultDeviceId;
+    const bool compiled_identity_changed =
+        stored_identity_matches_default && config.device_secret != secrets::kDefaultDeviceSecret;
+    if (has_default_identity &&
+        (config.device_id.isEmpty() || config.device_secret.isEmpty() || compiled_identity_changed)) {
         config.device_id = secrets::kDefaultDeviceId;
         config.device_secret = secrets::kDefaultDeviceSecret;
         seeded_device = true;

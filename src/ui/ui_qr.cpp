@@ -16,24 +16,19 @@ namespace ptc {
 namespace {
 
 constexpr int kQrSize = 360;
-constexpr int kCodeRevealMs = 10000;
 
 struct QrUi {
     lv_obj_t* canvas = nullptr;
     lv_color_t* canvas_buf = nullptr;
     lv_obj_t* qr_box = nullptr;
-    lv_obj_t* code_value = nullptr;
-    lv_obj_t* toast = nullptr;
-    lv_timer_t* hide_timer = nullptr;
     lv_obj_t* arc = nullptr;
     lv_obj_t* countdown = nullptr;
     lv_obj_t* qr_label = nullptr;
     const DeviceConfig* config = nullptr;
     String last_payload;
-    bool revealed = false;
 };
 
-constexpr int kQrVersion = 15;
+constexpr int kQrVersion = 10;
 constexpr int kQrQuietZone = 4;
 
 void draw_qr(QrUi& ui, const String& payload) {
@@ -80,62 +75,6 @@ void draw_qr(QrUi& ui, const String& payload) {
 
 void animate_pulse(lv_obj_t* target) {
     LV_UNUSED(target);
-}
-
-void hide_toast_cb(lv_timer_t* timer) {
-    auto* ui = static_cast<QrUi*>(timer->user_data);
-    if (ui->toast) {
-        lv_obj_add_flag(ui->toast, LV_OBJ_FLAG_HIDDEN);
-    }
-    lv_timer_del(timer);
-}
-
-void hide_code_cb(lv_timer_t* timer) {
-    auto* ui = static_cast<QrUi*>(timer->user_data);
-    if (!ui || !ui->code_value) {
-        return;
-    }
-    ui->revealed = false;
-    lv_label_set_text(ui->code_value, "Tap to reveal");
-    lv_timer_del(timer);
-    ui->hide_timer = nullptr;
-}
-
-void show_toast(QrUi& ui, const char* text) {
-    if (!ui.toast) {
-        return;
-    }
-    lv_label_set_text(ui.toast, text);
-    lv_obj_clear_flag(ui.toast, LV_OBJ_FLAG_HIDDEN);
-    lv_timer_create(hide_toast_cb, 2000, &ui);
-}
-
-void code_event_cb(lv_event_t* event) {
-    if (lv_event_get_code(event) != LV_EVENT_CLICKED) {
-        return;
-    }
-
-    auto* ui = static_cast<QrUi*>(lv_event_get_user_data(event));
-    if (!ui || !ui->code_value) {
-        return;
-    }
-
-    if (ui->revealed) {
-        show_toast(*ui, "Code shown");
-        return;
-    }
-
-    ui->revealed = true;
-    String manual = service_qr_manual_code();
-    if (manual.length() == 0) {
-        manual = "Waiting for sync";
-    }
-    lv_label_set_text(ui->code_value, manual.c_str());
-
-    if (ui->hide_timer) {
-        lv_timer_del(ui->hide_timer);
-    }
-    ui->hide_timer = lv_timer_create(hide_code_cb, kCodeRevealMs, ui);
 }
 
 } // namespace
@@ -209,28 +148,14 @@ void ui_qr_build(lv_obj_t* parent, const DeviceConfig& config, AppState& state) 
     lv_obj_set_flex_align(code_box, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_ver(code_box, 12, 0);
     lv_obj_clear_flag(code_box, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_flag(code_box, LV_OBJ_FLAG_CLICKABLE);
 
     lv_obj_t* code_hint = lv_label_create(code_box);
     lv_label_set_text(code_hint, "Manual code");
     lv_obj_set_style_text_color(code_hint, theme::text_muted(), 0);
 
-    ui.code_value = lv_label_create(code_box);
-    lv_label_set_text(ui.code_value, "Tap to reveal");
-    lv_obj_set_style_text_color(ui.code_value, theme::white(), 0);
-
-    lv_obj_add_event_cb(code_box, code_event_cb, LV_EVENT_CLICKED, &ui);
-
-    ui.toast = lv_label_create(parent);
-    lv_label_set_text(ui.toast, "Code shown");
-    lv_obj_set_style_bg_color(ui.toast, theme::maroon(), 0);
-    lv_obj_set_style_bg_opa(ui.toast, LV_OPA_80, 0);
-    lv_obj_set_style_text_color(ui.toast, theme::white(), 0);
-    lv_obj_set_style_pad_hor(ui.toast, 14, 0);
-    lv_obj_set_style_pad_ver(ui.toast, 8, 0);
-    lv_obj_set_style_radius(ui.toast, 10, 0);
-    lv_obj_add_flag(ui.toast, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_align(ui.toast, LV_ALIGN_TOP_MID, 0, 16);
+    lv_obj_t* code_value = lv_label_create(code_box);
+    lv_label_set_text(code_value, "Unavailable");
+    lv_obj_set_style_text_color(code_value, theme::text_soft(), 0);
 
     lv_timer_create([](lv_timer_t* timer) {
         auto* ui_ptr = static_cast<QrUi*>(timer->user_data);

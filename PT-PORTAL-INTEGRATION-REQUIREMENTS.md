@@ -196,6 +196,44 @@ Return a JSON array:
 Only return active notices visible to the device's assigned location. An empty
 array is valid.
 
+### POST /api/timeclock/devices/manual-code
+
+The physical display cannot generate a valid manual code locally. The current
+manual-entry submit route accepts only an 8-digit code already stored in
+`timeclock_manual_codes`, so add a device-authenticated route that creates that
+record.
+
+Request:
+
+```json
+{
+  "device_id": "<UUID>",
+  "qr_payload": "ptc1:<current signed payload>"
+}
+```
+
+Response:
+
+```json
+{
+  "code": "12345678",
+  "code_display": "1234-5678",
+  "expires_at": "2026-07-21T12:00:30Z"
+}
+```
+
+Requirements:
+
+- Authenticate the request using the signed device headers.
+- Generate a cryptographically random 8-digit code and retry on a uniqueness
+  collision.
+- Store the physical `device_id`, current QR payload, and a 30-second expiry.
+- Allow `timeclock_manual_codes.user_id` to be null for a physical-device code;
+  the employee is the authenticated user who later submits the code.
+- Replace or expire any previous unused code for the same physical device.
+- Return the secret in neither the response nor logs.
+- Apply a per-device rate limit aligned with `qr_interval_sec`.
+
 ## 6. Registration policy
 
 Do not add an unauthenticated endpoint that creates active devices and returns
@@ -226,6 +264,8 @@ the firmware version reported by heartbeat.
   duplicate scan is rejected.
 - Signed config, heartbeat, and notices requests succeed for the physical
   device.
+- A signed physical-device manual-code request returns an 8-digit code that can
+  be submitted once by an authenticated employee before it expires.
 - The admin device list never contains `secret`.
 - Secret rotation invalidates old QR signatures, and the replacement secret is
   shown only once.
