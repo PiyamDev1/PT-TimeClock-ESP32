@@ -126,6 +126,8 @@ bool github_download_asset(const String& asset_url) {
         g_last_error = "Asset HTTP begin failed";
         return false;
     }
+    http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+    http.setTimeout(15000);
     http.addHeader("User-Agent", "ptc-esp32");
     if (asset_url.startsWith("https://api.github.com/") && github_token_valid()) {
         http.addHeader("Authorization", String("token ") + secrets::kGithubToken);

@@ -37,8 +37,8 @@ static constexpr const char* kDefaultDeviceSecret = PTC_STRINGIFY(PTC_DEVICE_SEC
 static constexpr const char* kDefaultDeviceLocation = PTC_STRINGIFY(PTC_DEVICE_LOCATION);
 static constexpr const char* kDefaultWifiSsid = PTC_STRINGIFY(PTC_DEFAULT_WIFI_SSID);
 static constexpr const char* kDefaultWifiPassword = PTC_STRINGIFY(PTC_DEFAULT_WIFI_PASSWORD);
-static constexpr const char* kGithubOwner = "OWNER";
-static constexpr const char* kGithubRepo = "REPO";
+static constexpr const char* kGithubOwner = "PiyamDev1";
+static constexpr const char* kGithubRepo = "PT-TimeClock-ESP32";
 
 #ifndef PTC_GITHUB_TOKEN
 #define PTC_GITHUB_TOKEN ""

@@ -37,13 +37,10 @@ Arduino OTA starts automatically when Wi-Fi connects. The hostname is set to `pt
 
 GitHub OTA: tap "Install latest GitHub update". The device fetches the latest release, downloads `firmware.bin`, and stages it for boot. Reboot is deferred until you tap "Reboot to finish update".
 
-Configure these in [include/secrets.h](include/secrets.h):
+The public OTA repository is preconfigured as
+`PiyamDev1/PT-TimeClock-ESP32`, so no GitHub token is required.
 
-- `kGithubOwner`
-- `kGithubRepo`
-- `kGithubToken` (provided via build env var for private repos)
-
-Private repo token setup (recommended):
+Private repository token setup:
 
 - Copy template: `cp local.env.example local.env`
 - Set token in `local.env`: `PTC_GITHUB_TOKEN=ghp_your_token_here`
