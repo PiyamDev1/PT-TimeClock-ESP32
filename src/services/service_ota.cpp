@@ -131,6 +131,34 @@ bool is_version_newer(const String& candidate, const String& current) {
     return false;
 }
 
+bool request_latest_release(
+    bool use_authentication,
+    int& code,
+    String& response,
+    String& error) {
+    WiFiClientSecure client;
+    client.setInsecure();
+    HTTPClient http;
+    if (!http.begin(client, github_api_url())) {
+        error = "GitHub HTTP begin failed";
+        return false;
+    }
+    http.setTimeout(15000);
+    http.addHeader("User-Agent", "ptc-esp32");
+    http.addHeader("Accept", "application/vnd.github+json");
+    if (use_authentication) {
+        http.addHeader("Authorization", String("token ") + secrets::kGithubToken);
+    }
+
+    code = http.GET();
+    response = "";
+    if (code > 0) {
+        response = http.getString();
+    }
+    http.end();
+    return true;
+}
+
 String normalize_digest(const String& digest) {
     if (digest.startsWith("sha256:")) {
         return digest.substring(7);
@@ -227,26 +255,27 @@ bool fetch_latest_release(OtaResult& result) {
         return false;
     }
 
-    WiFiClientSecure client;
-    client.setInsecure();
-    HTTPClient http;
-    if (!http.begin(client, github_api_url())) {
-        result.error = "GitHub HTTP begin failed";
+    bool use_authentication = github_token_valid();
+    int code = 0;
+    String response;
+    if (!request_latest_release(
+            use_authentication,
+            code,
+            response,
+            result.error)) {
         return false;
     }
-    http.setTimeout(15000);
-    http.addHeader("User-Agent", "ptc-esp32");
-    http.addHeader("Accept", "application/vnd.github+json");
-    if (github_token_valid()) {
-        http.addHeader("Authorization", String("token ") + secrets::kGithubToken);
+    if (use_authentication && (code == 401 || code == 403)) {
+        Serial.println("[OTA] GitHub token rejected; retrying public release");
+        use_authentication = false;
+        if (!request_latest_release(
+                false,
+                code,
+                response,
+                result.error)) {
+            return false;
+        }
     }
-
-    const int code = http.GET();
-    String response;
-    if (code > 0) {
-        response = http.getString();
-    }
-    http.end();
     if (code < 200 || code >= 300) {
         result.error = String("GitHub API failed (") + code + ")";
         return false;
@@ -263,7 +292,7 @@ bool fetch_latest_release(OtaResult& result) {
         if (String(asset["name"] | "") != kFirmwareAssetName) {
             continue;
         }
-        result.asset_url = github_token_valid()
+        result.asset_url = use_authentication
             ? String(asset["url"] | "")
             : String(asset["browser_download_url"] | "");
         result.asset_size = static_cast<size_t>(asset["size"] | 0U);
