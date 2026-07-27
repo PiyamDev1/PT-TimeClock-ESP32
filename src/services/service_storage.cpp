@@ -15,7 +15,7 @@ namespace {
 Preferences g_prefs;
 bool g_sd_ready = false;
 
-constexpr uint32_t kSdFrequencyHz = 10000000;
+constexpr uint32_t kSdFrequencyHz = 4000000;
 constexpr const char* kNamespace = "ptc";
 constexpr const char* kStorageDir = "/ptc";
 constexpr const char* kMarkerPath = "/ptc/.initialized";
@@ -309,7 +309,10 @@ void service_storage_init() {
     if (!SD.exists(kStorageDir)) {
         SD.mkdir(kStorageDir);
     }
-    Serial.printf("[STORAGE] SD mounted size=%lluMB\n", SD.cardSize() / (1024ULL * 1024ULL));
+    Serial.printf(
+        "[STORAGE] SD mounted size=%lluMB spi=%luMHz\n",
+        SD.cardSize() / (1024ULL * 1024ULL),
+        static_cast<unsigned long>(kSdFrequencyHz / 1000000U));
 
     if (!SD.exists(kMarkerPath)) {
         if (strlen(secrets::kDefaultWifiSsid) > 0) {

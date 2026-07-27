@@ -30,6 +30,9 @@ constexpr uint32_t kRebootDelayMs = 1500;
 constexpr uint32_t kInitialAutoCheckDelayMs = 20000;
 constexpr uint32_t kPeriodicAutoCheckMs = 6U * 60U * 60U * 1000U;
 constexpr uint32_t kFailedAutoCheckRetryMs = 15U * 60U * 1000U;
+constexpr size_t kSdWriteBlockBytes = 512;
+constexpr size_t kSdFlushIntervalBytes = 32U * 1024U;
+constexpr uint8_t kSdWriteRetries = 5;
 
 enum class OtaCommandType : uint8_t {
     kCheck,
@@ -156,6 +159,43 @@ bool request_latest_release(
         response = http.getString();
     }
     http.end();
+    return true;
+}
+
+bool write_firmware_buffer(
+    File& target,
+    const uint8_t* buffer,
+    size_t length,
+    size_t file_offset,
+    String& error) {
+    size_t buffer_offset = 0;
+    uint8_t retries = 0;
+    while (buffer_offset < length) {
+        const size_t block_size =
+            min(kSdWriteBlockBytes, length - buffer_offset);
+        const size_t block_written =
+            target.write(buffer + buffer_offset, block_size);
+        if (block_written > 0) {
+            buffer_offset += block_written;
+            retries = 0;
+            continue;
+        }
+
+        target.flush();
+        delay(20);
+        ++retries;
+        if (retries >= kSdWriteRetries) {
+            const size_t failed_offset = file_offset + buffer_offset;
+            Serial.printf(
+                "[OTA] SD write failed offset=%u requested=%u position=%u\n",
+                static_cast<unsigned>(failed_offset),
+                static_cast<unsigned>(block_size),
+                static_cast<unsigned>(target.position()));
+            error = String("Memory card write failed at ") +
+                static_cast<unsigned>(failed_offset / 1024U) + " KB";
+            return false;
+        }
+    }
     return true;
 }
 
@@ -378,6 +418,7 @@ bool download_firmware(const OtaCommand& command, OtaResult& result) {
     WiFiClient* stream = http.getStreamPtr();
     uint8_t buffer[4096];
     size_t written = 0;
+    size_t next_flush_at = kSdFlushIntervalBytes;
     bool write_ok = true;
     uint32_t last_data_ms = millis();
     while ((http.connected() || stream->available()) && written < command.expected_size) {
@@ -400,13 +441,21 @@ bool download_firmware(const OtaCommand& command, OtaResult& result) {
             continue;
         }
         last_data_ms = millis();
-        if (target.write(buffer, received) != received) {
+        if (!write_firmware_buffer(
+                target,
+                buffer,
+                received,
+                written,
+                result.error)) {
             write_ok = false;
-            result.error = "Memory card write failed";
             break;
         }
         mbedtls_sha256_update_ret(&sha, buffer, received);
         written += received;
+        if (written >= next_flush_at) {
+            target.flush();
+            next_flush_at = written + kSdFlushIntervalBytes;
+        }
         g_progress = static_cast<uint8_t>((written * 100U) / command.expected_size);
         delay(1);
     }
