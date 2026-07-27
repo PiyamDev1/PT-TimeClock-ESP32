@@ -130,7 +130,7 @@ void status_timer_cb(lv_timer_t* timer) {
     }
 
     if (ui->sync) {
-        lv_label_set_text(ui->sync, ui->state->time_sync_ok ? LV_SYMBOL_OK "  NTP" : LV_SYMBOL_REFRESH "  NTP");
+        lv_label_set_text(ui->sync, ui->state->time_sync_ok ? LV_SYMBOL_OK "  Internet" : LV_SYMBOL_REFRESH "  Internet");
     }
 
     if (ui->time_label) {
@@ -804,7 +804,7 @@ void ui_root_init(DeviceConfig& config, AppState& state) {
     lv_label_set_text(status_ui.time_label, "--:--");
 
     status_ui.sync = lv_label_create(status);
-    lv_label_set_text(status_ui.sync, LV_SYMBOL_REFRESH "  NTP");
+    lv_label_set_text(status_ui.sync, LV_SYMBOL_REFRESH "  Internet");
 
     status_ui.qr = lv_label_create(status);
     lv_label_set_text(status_ui.qr, "QR --");

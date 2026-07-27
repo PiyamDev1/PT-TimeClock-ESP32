@@ -4,9 +4,8 @@
 
 namespace ptc {
 
-static constexpr const char* kFirmwareVersion = "0.1.0";
+static constexpr const char* kFirmwareVersion = "1-Alpha";
 static constexpr uint32_t kDefaultQrIntervalSec = 20;
-static constexpr uint16_t kMaxLogEntries = 200;
 static constexpr uint16_t kDefaultDisplayRotation = 0;
 
 struct DeviceConfig {

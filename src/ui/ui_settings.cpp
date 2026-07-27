@@ -22,6 +22,7 @@ struct RotationContext {
 struct SettingsUi {
     lv_obj_t* device_value = nullptr;
     lv_obj_t* wifi_value = nullptr;
+    lv_obj_t* storage_value = nullptr;
     lv_obj_t* api_value = nullptr;
     lv_obj_t* ota_value = nullptr;
     lv_obj_t* ota_button = nullptr;
@@ -189,6 +190,20 @@ String mask_secret(const String& secret) {
     return String("****") + tail;
 }
 
+String format_storage_status() {
+    StorageStatus status;
+    if (!service_storage_get_status(status) || !status.mounted) {
+        return "Not mounted";
+    }
+
+    const uint64_t mib = 1024ULL * 1024ULL;
+    const uint64_t free_mib = status.free_bytes / mib;
+    const uint64_t total_mib = status.capacity_bytes / mib;
+    return status.card_type + ", " +
+        String(static_cast<unsigned long>(free_mib)) + " MB free / " +
+        String(static_cast<unsigned long>(total_mib)) + " MB";
+}
+
 lv_obj_t* create_field(lv_obj_t* parent, const char* label, const char* value) {
     lv_obj_t* row = lv_obj_create(parent);
     lv_obj_set_width(row, lv_pct(100));
@@ -208,6 +223,8 @@ lv_obj_t* create_field(lv_obj_t* parent, const char* label, const char* value) {
 
     lv_obj_t* val = lv_label_create(row);
     lv_label_set_text(val, value);
+    lv_obj_set_width(val, lv_pct(100));
+    lv_label_set_long_mode(val, LV_LABEL_LONG_DOT);
     lv_obj_set_style_text_color(val, theme::white(), 0);
 
     return row;
@@ -245,12 +262,17 @@ void ui_settings_build(lv_obj_t* parent, DeviceConfig& config, AppState& state) 
     create_field(parent, "Device ID", device_id);
     create_field(parent, "Location", location);
     create_field(parent, "Secret", mask_secret(config.device_secret).c_str());
+    create_field(parent, "Version", kFirmwareVersion);
 
     lv_obj_t* device_row = create_field(parent, "Device status", state.device_active ? "Active" : "Inactive");
     ui.device_value = lv_obj_get_child(device_row, 1);
 
     lv_obj_t* wifi_row = create_field(parent, "Wi-Fi status", state.wifi_connected ? "Online" : "Offline");
     ui.wifi_value = lv_obj_get_child(wifi_row, 1);
+
+    const String initial_storage_status = format_storage_status();
+    lv_obj_t* storage_row = create_field(parent, "Memory card", initial_storage_status.c_str());
+    ui.storage_value = lv_obj_get_child(storage_row, 1);
 
     lv_obj_t* rotation_row = lv_obj_create(parent);
     lv_obj_set_width(rotation_row, lv_pct(100));
@@ -298,7 +320,7 @@ void ui_settings_build(lv_obj_t* parent, DeviceConfig& config, AppState& state) 
         ui_root_open_wifi_setup();
     }, LV_EVENT_CLICKED, nullptr);
 
-    lv_obj_t* time_btn = create_action(parent, LV_SYMBOL_REFRESH " Sync time");
+    lv_obj_t* time_btn = create_action(parent, LV_SYMBOL_REFRESH " Sync time with internet");
     lv_obj_add_event_cb(time_btn, [](lv_event_t*) {
         service_time_force_sync();
     }, LV_EVENT_CLICKED, nullptr);
@@ -357,15 +379,15 @@ void ui_settings_build(lv_obj_t* parent, DeviceConfig& config, AppState& state) 
     lv_obj_t* ota_row = create_field(parent, "OTA updates", "Starting...");
     ui.ota_value = lv_obj_get_child(ota_row, 1);
 
-    lv_obj_t* github_row = create_field(parent, "GitHub update", "Idle");
+    lv_obj_t* github_row = create_field(parent, "Software update", "Idle");
     ui.github_value = lv_obj_get_child(github_row, 1);
 
-    ui.github_check_button = create_action(parent, LV_SYMBOL_REFRESH " Install latest GitHub update");
+    ui.github_check_button = create_action(parent, LV_SYMBOL_REFRESH " Install latest software update");
     lv_obj_add_event_cb(ui.github_check_button, [](lv_event_t*) {
         service_ota_install_latest_github();
     }, LV_EVENT_CLICKED, nullptr);
 
-    ui.github_download_button = create_action(parent, LV_SYMBOL_DOWNLOAD " Download update (advanced)");
+    ui.github_download_button = create_action(parent, LV_SYMBOL_DOWNLOAD " Download software update (advanced)");
     lv_obj_add_event_cb(ui.github_download_button, [](lv_event_t*) {
         service_ota_check_github();
         service_ota_download_github();
@@ -390,13 +412,6 @@ void ui_settings_build(lv_obj_t* parent, DeviceConfig& config, AppState& state) 
 
     rotation_ctx.toast = ui.toast;
 
-    lv_obj_t* revoke_btn = create_action(parent, LV_SYMBOL_WARNING " Revoke device");
-    lv_obj_add_event_cb(revoke_btn, [](lv_event_t*) {
-        service_wifi_clear_credentials();
-        service_storage_clear_all();
-        ESP.restart();
-    }, LV_EVENT_CLICKED, nullptr);
-
     lv_timer_create([](lv_timer_t* timer) {
         auto* ui_ptr = static_cast<SettingsUi*>(timer->user_data);
         if (!ui_ptr || !ui_ptr->wifi_value || !lv_obj_is_visible(ui_ptr->wifi_value)) {
@@ -409,6 +424,11 @@ void ui_settings_build(lv_obj_t* parent, DeviceConfig& config, AppState& state) 
 
         if (ui_ptr->device_value && ui_ptr->state) {
             lv_label_set_text(ui_ptr->device_value, ui_ptr->state->device_active ? "Active" : "Inactive");
+        }
+
+        if (ui_ptr->storage_value) {
+            const String storage_status = format_storage_status();
+            lv_label_set_text(ui_ptr->storage_value, storage_status.c_str());
         }
 
         if (ui_ptr->api_value) {
