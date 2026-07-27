@@ -27,6 +27,9 @@ constexpr const char* kPartialFirmwarePath = "/ptc/update/firmware.bin.part";
 constexpr const char* kMetadataPath = "/ptc/update/metadata.json";
 constexpr size_t kMinimumFirmwareBytes = 64U * 1024U;
 constexpr uint32_t kRebootDelayMs = 1500;
+constexpr uint32_t kInitialAutoCheckDelayMs = 20000;
+constexpr uint32_t kPeriodicAutoCheckMs = 6U * 60U * 60U * 1000U;
+constexpr uint32_t kFailedAutoCheckRetryMs = 15U * 60U * 1000U;
 
 enum class OtaCommandType : uint8_t {
     kCheck,
@@ -65,6 +68,8 @@ String g_github_status = "Idle";
 OtaState g_state = OtaState::kIdle;
 volatile uint8_t g_progress = 0;
 uint32_t g_reboot_started_ms = 0;
+uint32_t g_wifi_connected_since_ms = 0;
+uint32_t g_last_release_check_ms = 0;
 QueueHandle_t g_command_queue = nullptr;
 QueueHandle_t g_result_queue = nullptr;
 TaskHandle_t g_worker_task = nullptr;
@@ -83,6 +88,47 @@ bool github_config_valid() {
 
 bool github_token_valid() {
     return strlen(secrets::kGithubToken) > 0;
+}
+
+size_t version_numbers(const String& version, uint32_t* parts, size_t max_parts) {
+    size_t count = 0;
+    size_t index = 0;
+    while (index < version.length() && count < max_parts) {
+        while (index < version.length() &&
+            (version[index] < '0' || version[index] > '9')) {
+            ++index;
+        }
+        if (index >= version.length()) {
+            break;
+        }
+
+        uint32_t value = 0;
+        while (index < version.length() &&
+            version[index] >= '0' && version[index] <= '9') {
+            value = value * 10U + static_cast<uint32_t>(version[index] - '0');
+            ++index;
+        }
+        parts[count++] = value;
+    }
+    return count;
+}
+
+bool is_version_newer(const String& candidate, const String& current) {
+    constexpr size_t kMaxVersionParts = 6;
+    uint32_t candidate_parts[kMaxVersionParts] = {0};
+    uint32_t current_parts[kMaxVersionParts] = {0};
+    const size_t candidate_count =
+        version_numbers(candidate, candidate_parts, kMaxVersionParts);
+    const size_t current_count =
+        version_numbers(current, current_parts, kMaxVersionParts);
+    const size_t compare_count = max(candidate_count, current_count);
+
+    for (size_t i = 0; i < compare_count; ++i) {
+        if (candidate_parts[i] != current_parts[i]) {
+            return candidate_parts[i] > current_parts[i];
+        }
+    }
+    return false;
 }
 
 String normalize_digest(const String& digest) {
@@ -509,7 +555,7 @@ void consume_result(OtaResult* result) {
             g_latest_asset_size = result->asset_size;
             g_latest_digest = result->digest;
             g_progress = 0;
-            if (g_latest_version == kFirmwareVersion) {
+            if (!is_version_newer(g_latest_version, kFirmwareVersion)) {
                 g_state = OtaState::kUpToDate;
                 g_github_status = String("Up to date (") + kFirmwareVersion + ")";
                 remove_staged_update();
@@ -549,6 +595,8 @@ void service_ota_init() {
     g_last_error = "";
     g_state = OtaState::kIdle;
     g_progress = 0;
+    g_wifi_connected_since_ms = 0;
+    g_last_release_check_ms = 0;
 
     g_command_queue = xQueueCreate(1, sizeof(OtaCommand*));
     g_result_queue = xQueueCreate(1, sizeof(OtaResult*));
@@ -568,7 +616,7 @@ void service_ota_init() {
     String staged_digest;
     size_t staged_size = 0;
     if (load_staged_metadata(staged_version, staged_size, staged_digest)) {
-        if (staged_version == kFirmwareVersion) {
+        if (!is_version_newer(staged_version, kFirmwareVersion)) {
             remove_staged_update();
         } else {
             g_latest_version = staged_version;
@@ -598,8 +646,6 @@ void service_ota_init() {
 }
 
 void service_ota_tick(DeviceConfig& config, AppState& state) {
-    (void)state;
-
     OtaResult* result = nullptr;
     if (g_result_queue && xQueueReceive(g_result_queue, &result, 0) == pdTRUE) {
         consume_result(result);
@@ -616,7 +662,11 @@ void service_ota_tick(DeviceConfig& config, AppState& state) {
     }
     if (!service_wifi_is_connected()) {
         g_ready = false;
+        g_wifi_connected_since_ms = 0;
         return;
+    }
+    if (g_wifi_connected_since_ms == 0) {
+        g_wifi_connected_since_ms = millis();
     }
 
     if (g_hostname.length() == 0 && config.device_id.length() > 0) {
@@ -632,6 +682,28 @@ void service_ota_tick(DeviceConfig& config, AppState& state) {
     }
     if (g_ready) {
         ArduinoOTA.handle();
+    }
+
+    const bool checkable_state =
+        g_state == OtaState::kIdle ||
+        g_state == OtaState::kUpToDate ||
+        g_state == OtaState::kError;
+    if (!state.provisioning_complete || !checkable_state) {
+        return;
+    }
+
+    const uint32_t now = millis();
+    const bool first_check_due =
+        g_last_release_check_ms == 0 &&
+        now - g_wifi_connected_since_ms >= kInitialAutoCheckDelayMs;
+    const uint32_t check_interval =
+        g_state == OtaState::kError ? kFailedAutoCheckRetryMs : kPeriodicAutoCheckMs;
+    const bool periodic_check_due =
+        g_last_release_check_ms != 0 &&
+        now - g_last_release_check_ms >= check_interval;
+    if (first_check_due || periodic_check_due) {
+        Serial.println("[OTA] automatic release check");
+        service_ota_check_github();
     }
 }
 
@@ -650,6 +722,7 @@ void service_ota_check_github() {
         return;
     }
     g_state = OtaState::kChecking;
+    g_last_release_check_ms = millis();
     g_progress = 0;
     g_last_error = "";
     g_github_status = "Checking for updates";

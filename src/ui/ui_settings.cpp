@@ -31,12 +31,14 @@ struct SettingsUi {
     lv_obj_t* github_download_button = nullptr;
     lv_obj_t* github_apply_button = nullptr;
     lv_obj_t* update_page = nullptr;
+    lv_obj_t* update_title = nullptr;
     lv_obj_t* update_version = nullptr;
     lv_obj_t* update_status = nullptr;
     lv_obj_t* update_progress = nullptr;
     lv_obj_t* update_percent = nullptr;
     lv_obj_t* update_install_button = nullptr;
     lv_obj_t* update_back_button = nullptr;
+    String dismissed_update_version;
     lv_obj_t* toast = nullptr;
     AppState* state = nullptr;
 
@@ -267,36 +269,67 @@ void update_install_page(SettingsUi& ui) {
     String percent = String(progress) + "%";
     lv_label_set_text(ui.update_percent, percent.c_str());
 
+    String title = "Software update";
     String status = "Preparing update";
-    bool show_install = false;
+    String action_text = LV_SYMBOL_DOWNLOAD " Install firmware";
+    String back_text = LV_SYMBOL_LEFT " Back to settings";
+    bool show_action = false;
     bool show_back = false;
+    bool show_progress = true;
     switch (ota_state) {
+        case OtaState::kAvailable:
+            title = "Update available";
+            status = String("Firmware ") + service_ota_latest_version() +
+                " is available. Download it to the memory card now?";
+            action_text = LV_SYMBOL_DOWNLOAD " Download update";
+            back_text = "Not now";
+            show_action = true;
+            show_back = true;
+            show_progress = false;
+            break;
         case OtaState::kDownloading:
+            title = "Downloading update";
             status = "Downloading firmware.bin to the memory card";
             break;
         case OtaState::kDownloaded:
+            title = "Ready to install";
             status = "Download verified. Ready to install.";
-            show_install = true;
+            show_action = true;
             show_back = true;
             break;
         case OtaState::kInstalling:
+            title = "Installing update";
             status = "Installing firmware. Keep power connected.";
             break;
         case OtaState::kRebooting:
+            title = "Update complete";
             status = "Install complete. Rebooting...";
             break;
         case OtaState::kError:
+            title = "Update failed";
             status = service_ota_github_status();
             show_back = true;
+            show_progress = false;
             break;
         default:
             status = service_ota_github_status();
             show_back = true;
+            show_progress = false;
             break;
     }
+    lv_label_set_text(ui.update_title, title.c_str());
     lv_label_set_text(ui.update_status, status.c_str());
 
-    if (show_install) {
+    lv_obj_t* action_label = lv_obj_get_child(ui.update_install_button, 0);
+    if (action_label) {
+        lv_label_set_text(action_label, action_text.c_str());
+    }
+    lv_obj_t* back_label = lv_obj_get_child(ui.update_back_button, 0);
+    if (back_label) {
+        lv_label_set_text(back_label, back_text.c_str());
+    }
+
+    if (show_action) {
         lv_obj_clear_flag(ui.update_install_button, LV_OBJ_FLAG_HIDDEN);
     } else {
         lv_obj_add_flag(ui.update_install_button, LV_OBJ_FLAG_HIDDEN);
@@ -305,6 +338,13 @@ void update_install_page(SettingsUi& ui) {
         lv_obj_clear_flag(ui.update_back_button, LV_OBJ_FLAG_HIDDEN);
     } else {
         lv_obj_add_flag(ui.update_back_button, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (show_progress) {
+        lv_obj_clear_flag(ui.update_progress, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(ui.update_percent, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_add_flag(ui.update_progress, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(ui.update_percent, LV_OBJ_FLAG_HIDDEN);
     }
 }
 
@@ -335,9 +375,9 @@ void create_install_page(SettingsUi& ui) {
         LV_FLEX_ALIGN_CENTER);
     lv_obj_clear_flag(ui.update_page, LV_OBJ_FLAG_SCROLLABLE);
 
-    lv_obj_t* title = lv_label_create(ui.update_page);
-    lv_label_set_text(title, "Software update");
-    lv_obj_set_style_text_color(title, theme::white(), 0);
+    ui.update_title = lv_label_create(ui.update_page);
+    lv_label_set_text(ui.update_title, "Software update");
+    lv_obj_set_style_text_color(ui.update_title, theme::white(), 0);
 
     ui.update_version = lv_label_create(ui.update_page);
     lv_label_set_text(ui.update_version, kFirmwareVersion);
@@ -366,7 +406,11 @@ void create_install_page(SettingsUi& ui) {
         if (!ui_ptr) {
             return;
         }
-        service_ota_apply_update();
+        if (service_ota_state() == OtaState::kAvailable) {
+            service_ota_download_github();
+        } else if (service_ota_state() == OtaState::kDownloaded) {
+            service_ota_apply_update();
+        }
         update_install_page(*ui_ptr);
     }, LV_EVENT_CLICKED, &ui);
 
@@ -376,6 +420,7 @@ void create_install_page(SettingsUi& ui) {
     lv_obj_add_event_cb(ui.update_back_button, [](lv_event_t* event) {
         auto* ui_ptr = static_cast<SettingsUi*>(lv_event_get_user_data(event));
         if (ui_ptr && ui_ptr->update_page && !service_ota_exclusive()) {
+            ui_ptr->dismissed_update_version = service_ota_latest_version();
             lv_obj_add_flag(ui_ptr->update_page, LV_OBJ_FLAG_HIDDEN);
         }
     }, LV_EVENT_CLICKED, &ui);
@@ -383,8 +428,21 @@ void create_install_page(SettingsUi& ui) {
     lv_obj_add_flag(ui.update_page, LV_OBJ_FLAG_HIDDEN);
     lv_timer_create([](lv_timer_t* timer) {
         auto* ui_ptr = static_cast<SettingsUi*>(timer->user_data);
-        if (ui_ptr && ui_ptr->update_page &&
-            !lv_obj_has_flag(ui_ptr->update_page, LV_OBJ_FLAG_HIDDEN)) {
+        if (!ui_ptr || !ui_ptr->update_page) {
+            return;
+        }
+
+        const OtaState state = service_ota_state();
+        const bool should_prompt =
+            state == OtaState::kAvailable || state == OtaState::kDownloaded;
+        const String version = service_ota_latest_version();
+        if (should_prompt &&
+            ui_ptr->state &&
+            ui_ptr->state->provisioning_complete &&
+            lv_obj_has_flag(ui_ptr->update_page, LV_OBJ_FLAG_HIDDEN) &&
+            version != ui_ptr->dismissed_update_version) {
+            show_install_page(*ui_ptr);
+        } else if (!lv_obj_has_flag(ui_ptr->update_page, LV_OBJ_FLAG_HIDDEN)) {
             update_install_page(*ui_ptr);
         }
     }, 200, &ui);

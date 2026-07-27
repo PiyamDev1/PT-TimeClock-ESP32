@@ -9,8 +9,7 @@ namespace ptc {
 
 namespace {
 
-constexpr int kGmtOffsetSec = 0;
-constexpr int kDaylightOffsetSec = 0;
+constexpr const char* kTimezone = "GMT0BST,M3.5.0/1,M10.5.0/2";
 constexpr uint32_t kSyncRetryMs = 5000;
 uint32_t g_last_sync_ms = 0;
 
@@ -22,7 +21,8 @@ bool is_time_valid() {
 } // namespace
 
 void service_time_init() {
-    configTime(kGmtOffsetSec, kDaylightOffsetSec, "pool.ntp.org", "time.nist.gov");
+    configTzTime(kTimezone, "pool.ntp.org", "time.nist.gov");
+    Serial.println("[TIME] timezone Europe/London (GMT/BST)");
 }
 
 void service_time_tick(DeviceConfig& config, AppState& state) {
@@ -33,8 +33,14 @@ void service_time_tick(DeviceConfig& config, AppState& state) {
             state.time_sync_ok = true;
             service_storage_save_time_sync(true);
             service_log_add("Time synced");
-            Serial.printf("[TIME] synced epoch=%lu\n",
-                static_cast<unsigned long>(time(nullptr)));
+            const time_t now = time(nullptr);
+            struct tm local_time;
+            char local_text[40] = {0};
+            localtime_r(&now, &local_time);
+            strftime(local_text, sizeof(local_text), "%Y-%m-%d %H:%M:%S %Z", &local_time);
+            Serial.printf("[TIME] synced epoch=%lu local=%s\n",
+                static_cast<unsigned long>(now),
+                local_text);
         }
         return;
     }
@@ -49,13 +55,13 @@ void service_time_tick(DeviceConfig& config, AppState& state) {
     }
 
     g_last_sync_ms = millis();
-    configTime(kGmtOffsetSec, kDaylightOffsetSec, "pool.ntp.org", "time.nist.gov");
+    configTzTime(kTimezone, "pool.ntp.org", "time.nist.gov");
     Serial.println("[TIME] waiting for SNTP");
 }
 
 void service_time_force_sync() {
     g_last_sync_ms = millis() - kSyncRetryMs;
-    configTime(kGmtOffsetSec, kDaylightOffsetSec, "pool.ntp.org", "time.nist.gov");
+    configTzTime(kTimezone, "pool.ntp.org", "time.nist.gov");
 }
 
 } // namespace ptc
