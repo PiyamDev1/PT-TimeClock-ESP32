@@ -131,29 +131,35 @@ void loop() {
         }
     }
 
-    if (now_ms - g_last_wifi_tick_ms >= kWifiTickIntervalMs) {
+    bool ota_exclusive = ptc::service_ota_exclusive();
+    if (!ota_exclusive && now_ms - g_last_wifi_tick_ms >= kWifiTickIntervalMs) {
         g_last_wifi_tick_ms = now_ms;
         ptc::service_wifi_tick(g_config, g_state);
-    }
-    if (now_ms - g_last_time_tick_ms >= kTimeTickIntervalMs) {
-        g_last_time_tick_ms = now_ms;
-        ptc::service_time_tick(g_config, g_state);
-    }
-    if (now_ms - g_last_http_tick_ms >= kHttpTickIntervalMs) {
-        g_last_http_tick_ms = now_ms;
-        ptc::service_http_tick(g_config, g_state);
-    }
-    if (now_ms - g_last_qr_tick_ms >= kQrTickIntervalMs) {
-        g_last_qr_tick_ms = now_ms;
-        ptc::service_qr_tick(g_config, g_state);
-    }
-    if (now_ms - g_last_log_tick_ms >= kLogTickIntervalMs) {
-        g_last_log_tick_ms = now_ms;
-        ptc::service_log_tick(g_config, g_state);
     }
     if (now_ms - g_last_ota_tick_ms >= kOtaTickIntervalMs) {
         g_last_ota_tick_ms = now_ms;
         ptc::service_ota_tick(g_config, g_state);
+    }
+    ota_exclusive = ptc::service_ota_exclusive();
+    if (!ota_exclusive) {
+        if (now_ms - g_last_time_tick_ms >= kTimeTickIntervalMs) {
+            g_last_time_tick_ms = now_ms;
+            ptc::service_time_tick(g_config, g_state);
+        }
+        if (now_ms - g_last_http_tick_ms >= kHttpTickIntervalMs) {
+            g_last_http_tick_ms = now_ms;
+            ptc::service_http_tick(g_config, g_state);
+        }
+        if (now_ms - g_last_qr_tick_ms >= kQrTickIntervalMs) {
+            g_last_qr_tick_ms = now_ms;
+            ptc::service_qr_tick(g_config, g_state);
+        }
+        if (now_ms - g_last_log_tick_ms >= kLogTickIntervalMs) {
+            g_last_log_tick_ms = now_ms;
+            ptc::service_log_tick(g_config, g_state);
+        }
+    } else {
+        g_last_input_ms = now_ms;
     }
 
     uint32_t sleep_ms = 1;
@@ -179,7 +185,7 @@ void loop() {
     }
 
     uint32_t idle_ms = millis() - g_last_input_ms;
-    if (g_display_ready && ptc::display_driver_is_backlight_on()) {
+    if (g_display_ready && ptc::display_driver_is_backlight_on() && !ota_exclusive) {
         if (idle_ms > kScreenOffTimeoutMs) {
             ptc::touch_driver_prepare_for_screen_off();
             ptc::display_driver_set_render_enabled(false);

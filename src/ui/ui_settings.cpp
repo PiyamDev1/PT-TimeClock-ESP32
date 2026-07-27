@@ -30,6 +30,13 @@ struct SettingsUi {
     lv_obj_t* github_check_button = nullptr;
     lv_obj_t* github_download_button = nullptr;
     lv_obj_t* github_apply_button = nullptr;
+    lv_obj_t* update_page = nullptr;
+    lv_obj_t* update_version = nullptr;
+    lv_obj_t* update_status = nullptr;
+    lv_obj_t* update_progress = nullptr;
+    lv_obj_t* update_percent = nullptr;
+    lv_obj_t* update_install_button = nullptr;
+    lv_obj_t* update_back_button = nullptr;
     lv_obj_t* toast = nullptr;
     AppState* state = nullptr;
 
@@ -241,6 +248,148 @@ lv_obj_t* create_action(lv_obj_t* parent, const char* text) {
     return btn;
 }
 
+void update_install_page(SettingsUi& ui) {
+    if (!ui.update_page) {
+        return;
+    }
+
+    const OtaState ota_state = service_ota_state();
+    const uint8_t progress = service_ota_progress();
+    String version = service_ota_latest_version();
+    if (version.length() == 0) {
+        version = "Checking release";
+    } else {
+        version = String(kFirmwareVersion) + "  >  " + version;
+    }
+    lv_label_set_text(ui.update_version, version.c_str());
+    lv_bar_set_value(ui.update_progress, progress, LV_ANIM_OFF);
+
+    String percent = String(progress) + "%";
+    lv_label_set_text(ui.update_percent, percent.c_str());
+
+    String status = "Preparing update";
+    bool show_install = false;
+    bool show_back = false;
+    switch (ota_state) {
+        case OtaState::kDownloading:
+            status = "Downloading firmware.bin to the memory card";
+            break;
+        case OtaState::kDownloaded:
+            status = "Download verified. Ready to install.";
+            show_install = true;
+            show_back = true;
+            break;
+        case OtaState::kInstalling:
+            status = "Installing firmware. Keep power connected.";
+            break;
+        case OtaState::kRebooting:
+            status = "Install complete. Rebooting...";
+            break;
+        case OtaState::kError:
+            status = service_ota_github_status();
+            show_back = true;
+            break;
+        default:
+            status = service_ota_github_status();
+            show_back = true;
+            break;
+    }
+    lv_label_set_text(ui.update_status, status.c_str());
+
+    if (show_install) {
+        lv_obj_clear_flag(ui.update_install_button, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_add_flag(ui.update_install_button, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (show_back) {
+        lv_obj_clear_flag(ui.update_back_button, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_add_flag(ui.update_back_button, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+void show_install_page(SettingsUi& ui) {
+    if (!ui.update_page) {
+        return;
+    }
+    update_install_page(ui);
+    lv_obj_clear_flag(ui.update_page, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(ui.update_page);
+}
+
+void create_install_page(SettingsUi& ui) {
+    ui.update_page = lv_obj_create(lv_scr_act());
+    lv_obj_set_size(ui.update_page, lv_pct(100), lv_pct(100));
+    lv_obj_set_pos(ui.update_page, 0, 0);
+    lv_obj_set_style_radius(ui.update_page, 0, 0);
+    lv_obj_set_style_border_width(ui.update_page, 0, 0);
+    lv_obj_set_style_bg_color(ui.update_page, theme::black(), 0);
+    lv_obj_set_style_bg_opa(ui.update_page, LV_OPA_COVER, 0);
+    lv_obj_set_style_pad_all(ui.update_page, 32, 0);
+    lv_obj_set_style_pad_row(ui.update_page, 20, 0);
+    lv_obj_set_flex_flow(ui.update_page, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(
+        ui.update_page,
+        LV_FLEX_ALIGN_CENTER,
+        LV_FLEX_ALIGN_CENTER,
+        LV_FLEX_ALIGN_CENTER);
+    lv_obj_clear_flag(ui.update_page, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t* title = lv_label_create(ui.update_page);
+    lv_label_set_text(title, "Software update");
+    lv_obj_set_style_text_color(title, theme::white(), 0);
+
+    ui.update_version = lv_label_create(ui.update_page);
+    lv_label_set_text(ui.update_version, kFirmwareVersion);
+    lv_obj_set_style_text_color(ui.update_version, theme::text_muted(), 0);
+
+    ui.update_status = lv_label_create(ui.update_page);
+    lv_obj_set_width(ui.update_status, lv_pct(90));
+    lv_label_set_long_mode(ui.update_status, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_align(ui.update_status, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_color(ui.update_status, theme::white(), 0);
+
+    ui.update_progress = lv_bar_create(ui.update_page);
+    lv_obj_set_size(ui.update_progress, lv_pct(80), 22);
+    lv_bar_set_range(ui.update_progress, 0, 100);
+    lv_obj_set_style_bg_color(ui.update_progress, theme::surface(), LV_PART_MAIN);
+    lv_obj_set_style_bg_color(ui.update_progress, theme::maroon(), LV_PART_INDICATOR);
+
+    ui.update_percent = lv_label_create(ui.update_page);
+    lv_label_set_text(ui.update_percent, "0%");
+    lv_obj_set_style_text_color(ui.update_percent, theme::white(), 0);
+
+    ui.update_install_button = create_action(ui.update_page, LV_SYMBOL_DOWNLOAD " Install firmware");
+    lv_obj_set_width(ui.update_install_button, 280);
+    lv_obj_add_event_cb(ui.update_install_button, [](lv_event_t* event) {
+        auto* ui_ptr = static_cast<SettingsUi*>(lv_event_get_user_data(event));
+        if (!ui_ptr) {
+            return;
+        }
+        service_ota_apply_update();
+        update_install_page(*ui_ptr);
+    }, LV_EVENT_CLICKED, &ui);
+
+    ui.update_back_button = create_action(ui.update_page, LV_SYMBOL_LEFT " Back to settings");
+    lv_obj_set_width(ui.update_back_button, 280);
+    lv_obj_set_style_bg_color(ui.update_back_button, theme::surface(), 0);
+    lv_obj_add_event_cb(ui.update_back_button, [](lv_event_t* event) {
+        auto* ui_ptr = static_cast<SettingsUi*>(lv_event_get_user_data(event));
+        if (ui_ptr && ui_ptr->update_page && !service_ota_exclusive()) {
+            lv_obj_add_flag(ui_ptr->update_page, LV_OBJ_FLAG_HIDDEN);
+        }
+    }, LV_EVENT_CLICKED, &ui);
+
+    lv_obj_add_flag(ui.update_page, LV_OBJ_FLAG_HIDDEN);
+    lv_timer_create([](lv_timer_t* timer) {
+        auto* ui_ptr = static_cast<SettingsUi*>(timer->user_data);
+        if (ui_ptr && ui_ptr->update_page &&
+            !lv_obj_has_flag(ui_ptr->update_page, LV_OBJ_FLAG_HIDDEN)) {
+            update_install_page(*ui_ptr);
+        }
+    }, 200, &ui);
+}
+
 } // namespace
 
 void ui_settings_build(lv_obj_t* parent, DeviceConfig& config, AppState& state) {
@@ -262,7 +411,7 @@ void ui_settings_build(lv_obj_t* parent, DeviceConfig& config, AppState& state) 
     create_field(parent, "Device ID", device_id);
     create_field(parent, "Location", location);
     create_field(parent, "Secret", mask_secret(config.device_secret).c_str());
-    create_field(parent, "Version", kFirmwareVersion);
+    create_field(parent, "Firmware version", kFirmwareVersion);
 
     lv_obj_t* device_row = create_field(parent, "Device status", state.device_active ? "Active" : "Inactive");
     ui.device_value = lv_obj_get_child(device_row, 1);
@@ -382,23 +531,31 @@ void ui_settings_build(lv_obj_t* parent, DeviceConfig& config, AppState& state) 
     lv_obj_t* github_row = create_field(parent, "Software update", "Idle");
     ui.github_value = lv_obj_get_child(github_row, 1);
 
-    ui.github_check_button = create_action(parent, LV_SYMBOL_REFRESH " Install latest software update");
+    ui.github_check_button = create_action(parent, LV_SYMBOL_REFRESH " Check for software updates");
     lv_obj_add_event_cb(ui.github_check_button, [](lv_event_t*) {
-        service_ota_install_latest_github();
+        service_ota_check_github();
     }, LV_EVENT_CLICKED, nullptr);
 
-    ui.github_download_button = create_action(parent, LV_SYMBOL_DOWNLOAD " Download software update (advanced)");
-    lv_obj_add_event_cb(ui.github_download_button, [](lv_event_t*) {
-        service_ota_check_github();
+    ui.github_download_button = create_action(parent, LV_SYMBOL_DOWNLOAD " Download update to memory card");
+    lv_obj_add_event_cb(ui.github_download_button, [](lv_event_t* event) {
+        auto* ui_ptr = static_cast<SettingsUi*>(lv_event_get_user_data(event));
         service_ota_download_github();
-    }, LV_EVENT_CLICKED, nullptr);
+        if (ui_ptr) {
+            show_install_page(*ui_ptr);
+        }
+    }, LV_EVENT_CLICKED, &ui);
     lv_obj_add_flag(ui.github_download_button, LV_OBJ_FLAG_HIDDEN);
 
-    ui.github_apply_button = create_action(parent, LV_SYMBOL_WARNING " Reboot to finish update");
-    lv_obj_add_event_cb(ui.github_apply_button, [](lv_event_t*) {
-        service_ota_apply_update();
-    }, LV_EVENT_CLICKED, nullptr);
+    ui.github_apply_button = create_action(parent, LV_SYMBOL_DOWNLOAD " Open update installer");
+    lv_obj_add_event_cb(ui.github_apply_button, [](lv_event_t* event) {
+        auto* ui_ptr = static_cast<SettingsUi*>(lv_event_get_user_data(event));
+        if (ui_ptr) {
+            show_install_page(*ui_ptr);
+        }
+    }, LV_EVENT_CLICKED, &ui);
     lv_obj_add_flag(ui.github_apply_button, LV_OBJ_FLAG_HIDDEN);
+
+    create_install_page(ui);
 
     ui.toast = lv_label_create(parent);
     lv_label_set_text(ui.toast, "Saved");
@@ -426,7 +583,7 @@ void ui_settings_build(lv_obj_t* parent, DeviceConfig& config, AppState& state) 
             lv_label_set_text(ui_ptr->device_value, ui_ptr->state->device_active ? "Active" : "Inactive");
         }
 
-        if (ui_ptr->storage_value) {
+        if (ui_ptr->storage_value && !service_ota_exclusive()) {
             const String storage_status = format_storage_status();
             lv_label_set_text(ui_ptr->storage_value, storage_status.c_str());
         }
@@ -464,8 +621,25 @@ void ui_settings_build(lv_obj_t* parent, DeviceConfig& config, AppState& state) 
             lv_label_set_text(ui_ptr->github_value, status.c_str());
         }
 
+        if (ui_ptr->github_check_button) {
+            if (service_ota_exclusive() || service_ota_update_available() ||
+                service_ota_update_ready()) {
+                lv_obj_add_flag(ui_ptr->github_check_button, LV_OBJ_FLAG_HIDDEN);
+            } else {
+                lv_obj_clear_flag(ui_ptr->github_check_button, LV_OBJ_FLAG_HIDDEN);
+            }
+        }
+
+        if (ui_ptr->github_download_button) {
+            if (service_ota_update_available()) {
+                lv_obj_clear_flag(ui_ptr->github_download_button, LV_OBJ_FLAG_HIDDEN);
+            } else {
+                lv_obj_add_flag(ui_ptr->github_download_button, LV_OBJ_FLAG_HIDDEN);
+            }
+        }
+
         if (ui_ptr->github_apply_button) {
-            if (service_ota_reboot_required()) {
+            if (service_ota_update_ready()) {
                 lv_obj_clear_flag(ui_ptr->github_apply_button, LV_OBJ_FLAG_HIDDEN);
             } else {
                 lv_obj_add_flag(ui_ptr->github_apply_button, LV_OBJ_FLAG_HIDDEN);
