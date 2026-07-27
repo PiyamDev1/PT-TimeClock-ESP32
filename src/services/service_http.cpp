@@ -28,6 +28,7 @@ enum class RequestKind : uint8_t {
     kConfig,
     kHeartbeat,
     kNotices,
+    kActivity,
     kManualCode,
 };
 
@@ -60,7 +61,10 @@ RequestKind g_active_request = RequestKind::kNone;
 uint32_t g_last_config_ms = 0;
 uint32_t g_last_notice_ms = 0;
 uint32_t g_last_heartbeat_ms = 0;
+uint32_t g_last_activity_ms = 0;
+uint32_t g_activity_interval_ms = 30000;
 uint32_t g_last_notice_ts = 0;
+uint32_t g_last_activity_ts = 0;
 bool g_initial_config_complete = false;
 bool g_force_notice = false;
 
@@ -81,7 +85,10 @@ uint32_t g_registration_retry_ms = 5000;
 
 constexpr uint32_t kConfigIntervalMs = 300000;
 constexpr uint32_t kNoticeIntervalMs = 180000;
+constexpr size_t kMaxCachedNotices = 16;
 constexpr uint32_t kHeartbeatIntervalMs = 60000;
+constexpr uint32_t kActivityIntervalMs = 30000;
+constexpr uint32_t kActivityUnavailableIntervalMs = 300000;
 constexpr uint32_t kRegistrationRetryMaxMs = 60000;
 constexpr uint32_t kFailureBackoffMaxMs = 300000;
 
@@ -95,6 +102,8 @@ const char* request_name(RequestKind kind) {
             return "heartbeat";
         case RequestKind::kNotices:
             return "notices";
+        case RequestKind::kActivity:
+            return "activity";
         case RequestKind::kManualCode:
             return "manual-code";
         default:
@@ -277,6 +286,9 @@ void load_notices_from_json(const String& json, bool persist) {
 
     g_notices.clear();
     for (JsonObject item : document.as<JsonArray>()) {
+        if (g_notices.size() >= kMaxCachedNotices) {
+            break;
+        }
         Notice notice;
         notice.id = String(item["id"] | "");
         notice.title = String(item["title"] | "");
@@ -294,6 +306,69 @@ void load_notices_from_json(const String& json, bool persist) {
     if (persist) {
         service_storage_save_notices(json, g_last_notice_ts);
     }
+}
+
+String normalize_activity_action(const String& raw_action) {
+    String action = raw_action;
+    action.toLowerCase();
+    action.replace("_", " ");
+    action.trim();
+    if (action == "in" || action == "clock in" || action == "check in") {
+        return "clocked in";
+    }
+    if (action == "out" || action == "clock out" || action == "check out") {
+        return "clocked out";
+    }
+    return action;
+}
+
+void load_activity_from_json(const String& json) {
+    DynamicJsonDocument document(8192);
+    if (deserializeJson(document, json) != DeserializationError::Ok ||
+        !document.is<JsonArray>()) {
+        g_last_error = "Activity response invalid";
+        service_log_add("Activity parse error");
+        return;
+    }
+
+    uint16_t accepted = 0;
+    for (JsonObject item : document.as<JsonArray>()) {
+        const String event_id = String(item["id"] | "");
+        String user = String(item["user_name"] | "");
+        if (user.isEmpty()) {
+            user = String(item["employee_name"] | "");
+        }
+        if (user.isEmpty()) {
+            user = String(item["user"] | "");
+        }
+
+        String action = String(item["action"] | "");
+        if (action.isEmpty()) {
+            action = String(item["punch_type"] | "");
+        }
+        if (action.isEmpty()) {
+            action = String(item["event_type"] | "");
+        }
+        action = normalize_activity_action(action);
+
+        uint32_t timestamp = item["timestamp"] | 0;
+        if (timestamp == 0) {
+            const char* occurred_at = item["occurred_at"] | "";
+            if (!occurred_at[0]) {
+                occurred_at = item["created_at"] | "";
+            }
+            timestamp = parse_iso_timestamp(occurred_at);
+        }
+        if (user.isEmpty() || timestamp == 0 ||
+            (action != "clocked in" && action != "clocked out")) {
+            continue;
+        }
+
+        service_log_add_activity(user, action, timestamp, event_id);
+        g_last_activity_ts = max(g_last_activity_ts, timestamp);
+        accepted++;
+    }
+    Serial.printf("[HTTP] activity applied count=%u\n", accepted);
 }
 
 void apply_config_result(DeviceConfig& config, AppState& state, const ServiceResult& result) {
@@ -349,6 +424,13 @@ void apply_registration_result(DeviceConfig& config, AppState& state, const Serv
 }
 
 void mark_request_failure(DeviceConfig& config, AppState& state, const ServiceResult& result) {
+    if (result.kind == RequestKind::kActivity && result.status_code == 404) {
+        g_last_activity_ms = millis();
+        g_activity_interval_ms = kActivityUnavailableIntervalMs;
+        Serial.println("[HTTP] activity route unavailable");
+        return;
+    }
+
     g_api_ok = false;
     g_last_error = result.status_code > 0
         ? String(request_name(result.kind)) + " HTTP " + result.status_code
@@ -386,6 +468,7 @@ void mark_request_failure(DeviceConfig& config, AppState& state, const ServiceRe
         if (result.kind == RequestKind::kConfig) g_last_config_ms = now;
         if (result.kind == RequestKind::kHeartbeat) g_last_heartbeat_ms = now;
         if (result.kind == RequestKind::kNotices) g_last_notice_ms = now;
+        if (result.kind == RequestKind::kActivity) g_last_activity_ms = now;
         if (result.kind == RequestKind::kManualCode) g_manual_done_for_payload = true;
     }
 }
@@ -428,6 +511,11 @@ void apply_service_result(DeviceConfig& config, AppState& state, ServiceResult* 
             g_force_notice = false;
             Serial.printf("[HTTP] notices applied count=%u\n",
                 static_cast<unsigned>(g_notices.size()));
+            break;
+        case RequestKind::kActivity:
+            load_activity_from_json(result->body);
+            g_last_activity_ms = now;
+            g_activity_interval_ms = kActivityIntervalMs;
             break;
         case RequestKind::kManualCode: {
             if (result->correlation != g_manual_target_payload) {
@@ -503,6 +591,19 @@ bool enqueue_notices(const DeviceConfig& config) {
         RequestKind::kNotices,
         "GET",
         String("/api/timeclock/notices?device_id=") + config.device_id,
+        "",
+        config);
+}
+
+bool enqueue_activity(const DeviceConfig& config) {
+    String path = String("/api/timeclock/devices/activity?device_id=") + config.device_id;
+    if (g_last_activity_ts > 0) {
+        path += "&since=" + String(g_last_activity_ts);
+    }
+    return enqueue_request(
+        RequestKind::kActivity,
+        "GET",
+        path,
         "",
         config);
 }
@@ -635,6 +736,10 @@ void service_http_tick(DeviceConfig& config, AppState& state) {
     }
     if (interval_due(g_last_heartbeat_ms, kHeartbeatIntervalMs)) {
         enqueue_heartbeat(config);
+        return;
+    }
+    if (interval_due(g_last_activity_ms, g_activity_interval_ms)) {
+        enqueue_activity(config);
         return;
     }
     if (g_force_notice || interval_due(g_last_notice_ms, kNoticeIntervalMs)) {

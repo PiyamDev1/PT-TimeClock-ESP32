@@ -24,8 +24,12 @@ constexpr const char* kStatePath = "/ptc/state.json";
 constexpr const char* kWifiPath = "/ptc/wifi.json";
 constexpr const char* kNoticesPath = "/ptc/notices.json";
 constexpr const char* kNoticesMetaPath = "/ptc/notices.meta.json";
-constexpr const char* kLogsPath = "/ptc/logs.json";
+constexpr const char* kLegacyLogsPath = "/ptc/logs.json";
+constexpr const char* kSystemLogPath = "/ptc/system.jsonl";
+constexpr const char* kActivityLogPath = "/ptc/activity.jsonl";
 constexpr const char* kCalibrationPath = "/ptc/calibration.json";
+constexpr size_t kMaxSystemLogBytes = 512 * 1024;
+constexpr size_t kMaxActivityLogBytes = 1024 * 1024;
 
 constexpr const char* kKeyDeviceId = "device_id";
 constexpr const char* kKeyDeviceSecret = "device_secret";
@@ -37,7 +41,7 @@ constexpr const char* kKeyDisplayRotation = "disp_rot";
 constexpr const char* kKeyDeviceActive = "dev_active";
 constexpr const char* kKeyNoticesJson = "notices_json";
 constexpr const char* kKeyNoticesTs = "notices_ts";
-constexpr const char* kKeyLogsJson = "logs_json";
+constexpr const char* kKeyLegacyLogsJson = "logs_json";
 constexpr const char* kKeyTouchMinX = "t_min_x";
 constexpr const char* kKeyTouchMaxX = "t_max_x";
 constexpr const char* kKeyTouchMinY = "t_min_y";
@@ -120,6 +124,137 @@ bool write_sd_text_atomic(const char* path, const String& content) {
     return true;
 }
 
+const char* card_type_name(uint8_t card_type) {
+    switch (card_type) {
+        case CARD_MMC:
+            return "MMC";
+        case CARD_SD:
+            return "SDSC";
+        case CARD_SDHC:
+            return "SDHC";
+        default:
+            return "Unknown";
+    }
+}
+
+bool rotate_file_if_needed(const char* path, size_t max_bytes) {
+    if (!g_sd_ready || !SD.exists(path)) {
+        return g_sd_ready;
+    }
+
+    File file = SD.open(path, FILE_READ);
+    if (!file) {
+        return false;
+    }
+    const size_t size = file.size();
+    file.close();
+    if (size < max_bytes) {
+        return true;
+    }
+
+    const String archive_path = String(path) + ".1";
+    SD.remove(archive_path.c_str());
+    return SD.rename(path, archive_path.c_str());
+}
+
+bool append_json_line(
+    const char* path,
+    size_t max_bytes,
+    uint32_t timestamp,
+    const String& first_key,
+    const String& first_value,
+    const String& second_key = "",
+    const String& second_value = "") {
+    if (!g_sd_ready || !rotate_file_if_needed(path, max_bytes)) {
+        return false;
+    }
+
+    File file = SD.open(path, FILE_APPEND);
+    if (!file) {
+        return false;
+    }
+
+    StaticJsonDocument<512> doc;
+    doc["ts"] = timestamp;
+    doc[first_key] = first_value;
+    if (!second_key.isEmpty()) {
+        doc[second_key] = second_value;
+    }
+    const size_t written = serializeJson(doc, file);
+    const size_t newline_written = file.print('\n');
+    file.flush();
+    file.close();
+    return written > 0 && newline_written == 1;
+}
+
+bool append_activity_line(
+    const String& event_id,
+    uint32_t timestamp,
+    const String& user,
+    const String& action) {
+    if (!g_sd_ready || !rotate_file_if_needed(kActivityLogPath, kMaxActivityLogBytes)) {
+        return false;
+    }
+
+    File file = SD.open(kActivityLogPath, FILE_APPEND);
+    if (!file) {
+        return false;
+    }
+    StaticJsonDocument<640> doc;
+    doc["id"] = event_id;
+    doc["ts"] = timestamp;
+    doc["user"] = user;
+    doc["action"] = action;
+    const size_t written = serializeJson(doc, file);
+    const size_t newline_written = file.print('\n');
+    file.flush();
+    file.close();
+    return written > 0 && newline_written == 1;
+}
+
+void load_activity_file(
+    const char* path,
+    std::vector<StoredActivity>& entries,
+    uint16_t max_entries) {
+    if (!g_sd_ready || !SD.exists(path) || max_entries == 0) {
+        return;
+    }
+
+    File file = SD.open(path, FILE_READ);
+    if (!file || file.isDirectory()) {
+        if (file) {
+            file.close();
+        }
+        return;
+    }
+
+    while (file.available()) {
+        const String line = file.readStringUntil('\n');
+        if (line.isEmpty()) {
+            continue;
+        }
+        StaticJsonDocument<512> doc;
+        if (deserializeJson(doc, line) != DeserializationError::Ok) {
+            continue;
+        }
+
+        StoredActivity entry;
+        entry.event_id = String(doc["id"] | "");
+        entry.timestamp = doc["ts"] | 0;
+        entry.user = String(doc["user"] | "");
+        entry.action = String(doc["action"] | "");
+        if (entry.user.isEmpty() ||
+            (entry.action != "clocked in" && entry.action != "clocked out")) {
+            continue;
+        }
+        if (entries.size() >= max_entries) {
+            entries.erase(entries.begin());
+        }
+        entries.push_back(entry);
+    }
+    file.close();
+}
+
 void load_state_from_sd(AppState& state) {
     String json;
     if (!read_sd_text(kStatePath, json)) {
@@ -189,6 +324,30 @@ bool service_storage_sd_ready() {
     return g_sd_ready;
 }
 
+bool service_storage_get_status(StorageStatus& status) {
+    status = StorageStatus{};
+    if (!g_sd_ready) {
+        return false;
+    }
+
+    const uint8_t type = SD.cardType();
+    if (type == CARD_NONE) {
+        return false;
+    }
+
+    status.mounted = true;
+    status.card_type = card_type_name(type);
+    status.capacity_bytes = SD.totalBytes();
+    if (status.capacity_bytes == 0) {
+        status.capacity_bytes = SD.cardSize();
+    }
+    status.used_bytes = SD.usedBytes();
+    status.free_bytes = status.capacity_bytes > status.used_bytes
+        ? status.capacity_bytes - status.used_bytes
+        : 0;
+    return true;
+}
+
 void service_storage_load_config(DeviceConfig& config, AppState& state) {
     config.device_id = g_prefs.getString(kKeyDeviceId, "");
     config.device_secret = g_prefs.getString(kKeyDeviceSecret, "");
@@ -253,12 +412,10 @@ void service_storage_load_config(DeviceConfig& config, AppState& state) {
 }
 
 void service_storage_save_config(const DeviceConfig& config) {
+    // Keep only the device identity in NVS so the unit remains recoverable if
+    // its SD card is removed. Mutable settings live on the SD card.
     g_prefs.putString(kKeyDeviceId, config.device_id);
     g_prefs.putString(kKeyDeviceSecret, config.device_secret);
-    g_prefs.putString(kKeyLocationId, config.location_id);
-    g_prefs.putString(kKeyLocationName, config.location_name);
-    g_prefs.putUInt(kKeyQrInterval, config.qr_interval_sec);
-    g_prefs.putUShort(kKeyDisplayRotation, config.display_rotation);
 
     StaticJsonDocument<1024> doc;
     doc["device_id"] = config.device_id;
@@ -269,7 +426,17 @@ void service_storage_save_config(const DeviceConfig& config) {
     doc["display_rotation"] = config.display_rotation;
     String json;
     serializeJson(doc, json);
-    write_sd_text_atomic(kConfigPath, json);
+    if (!write_sd_text_atomic(kConfigPath, json)) {
+        g_prefs.putString(kKeyLocationId, config.location_id);
+        g_prefs.putString(kKeyLocationName, config.location_name);
+        g_prefs.putUInt(kKeyQrInterval, config.qr_interval_sec);
+        g_prefs.putUShort(kKeyDisplayRotation, config.display_rotation);
+    } else {
+        g_prefs.remove(kKeyLocationId);
+        g_prefs.remove(kKeyLocationName);
+        g_prefs.remove(kKeyQrInterval);
+        g_prefs.remove(kKeyDisplayRotation);
+    }
 }
 
 bool service_storage_load_wifi(String& ssid, String& password) {
@@ -305,24 +472,37 @@ void service_storage_clear_wifi() {
 }
 
 void service_storage_save_time_sync(bool ok) {
-    g_prefs.putBool(kKeyTimeSyncOk, ok);
     update_state_on_sd("time_sync_ok", ok);
+    if (g_sd_ready) {
+        g_prefs.remove(kKeyTimeSyncOk);
+    } else {
+        g_prefs.putBool(kKeyTimeSyncOk, ok);
+    }
 }
 
 void service_storage_save_device_active(bool active) {
-    g_prefs.putBool(kKeyDeviceActive, active);
     update_state_on_sd("device_active", active);
+    if (g_sd_ready) {
+        g_prefs.remove(kKeyDeviceActive);
+    } else {
+        g_prefs.putBool(kKeyDeviceActive, active);
+    }
 }
 
 void service_storage_save_notices(const String& json, uint32_t ts) {
-    g_prefs.putString(kKeyNoticesJson, json);
-    g_prefs.putUInt(kKeyNoticesTs, ts);
-    write_sd_text_atomic(kNoticesPath, json);
+    const bool saved_notices = write_sd_text_atomic(kNoticesPath, json);
     StaticJsonDocument<96> meta;
     meta["timestamp"] = ts;
     String meta_json;
     serializeJson(meta, meta_json);
-    write_sd_text_atomic(kNoticesMetaPath, meta_json);
+    const bool saved_meta = write_sd_text_atomic(kNoticesMetaPath, meta_json);
+    if (saved_notices && saved_meta) {
+        g_prefs.remove(kKeyNoticesJson);
+        g_prefs.remove(kKeyNoticesTs);
+    } else {
+        g_prefs.putString(kKeyNoticesJson, json);
+        g_prefs.putUInt(kKeyNoticesTs, ts);
+    }
 }
 
 bool service_storage_load_notices(String& json, uint32_t& ts) {
@@ -341,17 +521,35 @@ bool service_storage_load_notices(String& json, uint32_t& ts) {
     return !json.isEmpty();
 }
 
-void service_storage_save_logs(const String& json) {
-    g_prefs.putString(kKeyLogsJson, json);
-    write_sd_text_atomic(kLogsPath, json);
+bool service_storage_append_system_log(uint32_t timestamp, const String& message) {
+    return append_json_line(
+        kSystemLogPath,
+        kMaxSystemLogBytes,
+        timestamp,
+        "message",
+        message);
 }
 
-bool service_storage_load_logs(String& json) {
-    if (read_sd_text(kLogsPath, json)) {
-        return !json.isEmpty();
+bool service_storage_append_activity(
+    const String& event_id,
+    uint32_t timestamp,
+    const String& user,
+    const String& action) {
+    if (user.isEmpty() || (action != "clocked in" && action != "clocked out")) {
+        return false;
     }
-    json = g_prefs.isKey(kKeyLogsJson) ? g_prefs.getString(kKeyLogsJson, "") : "";
-    return !json.isEmpty();
+    return append_activity_line(event_id, timestamp, user, action);
+}
+
+bool service_storage_load_recent_activity(
+    std::vector<StoredActivity>& entries,
+    uint16_t max_entries) {
+    entries.clear();
+    entries.reserve(max_entries);
+    const String archive_path = String(kActivityLogPath) + ".1";
+    load_activity_file(archive_path.c_str(), entries, max_entries);
+    load_activity_file(kActivityLogPath, entries, max_entries);
+    return !entries.empty();
 }
 
 void service_storage_save_touch_calibration(const TouchCalibration& calibration) {
@@ -461,9 +659,14 @@ void service_storage_clear_all() {
     remove_sd_file(kWifiPath);
     remove_sd_file(kNoticesPath);
     remove_sd_file(kNoticesMetaPath);
-    remove_sd_file(kLogsPath);
+    remove_sd_file(kLegacyLogsPath);
+    remove_sd_file(kSystemLogPath);
+    remove_sd_file((String(kSystemLogPath) + ".1").c_str());
+    remove_sd_file(kActivityLogPath);
+    remove_sd_file((String(kActivityLogPath) + ".1").c_str());
     remove_sd_file(kCalibrationPath);
     remove_sd_file(kMarkerPath);
+    g_prefs.remove(kKeyLegacyLogsJson);
 }
 
 } // namespace ptc

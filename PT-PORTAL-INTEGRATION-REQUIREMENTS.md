@@ -196,6 +196,50 @@ Return a JSON array:
 Only return active notices visible to the device's assigned location. An empty
 array is valid.
 
+### GET /api/timeclock/devices/activity
+
+Query:
+
+```text
+?device_id=<UUID>&since=<optional unix timestamp>
+```
+
+Return the recent clock activity for the physical device as a JSON array:
+
+```json
+[
+  {
+    "id": "<timeclock event UUID>",
+    "user_name": "Jane Smith",
+    "timestamp": 1785160930,
+    "action": "clocked in"
+  }
+]
+```
+
+Requirements:
+
+- Authenticate the request using the signed device headers.
+- Return only events belonging to the authenticated physical device.
+- Use a stable unique `id` so the firmware can discard duplicates.
+- Return `timestamp` as Unix seconds.
+- Normalize `action` to exactly `clocked in` or `clocked out`.
+- When `since` is present, return records newer than that timestamp, ordered
+  oldest to newest.
+- Limit each response to the latest 50 matching records.
+- Return an empty array when there are no new events.
+- Never return employee credentials, QR payloads, or device secrets.
+
+The firmware polls this route every 30 seconds, appends accepted events to the
+SD card, and displays them as:
+
+```text
+User - DD/MM/YYYY HH:MM - clocked in/out
+```
+
+Until this route exists, the firmware treats `404` as an optional unsupported
+feature and retries after five minutes without marking the main API offline.
+
 ### POST /api/timeclock/devices/manual-code
 
 The physical display cannot generate a valid manual code locally. The current

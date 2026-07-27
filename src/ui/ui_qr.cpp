@@ -16,7 +16,8 @@ namespace ptc {
 
 namespace {
 
-constexpr int kQrSize = 360;
+constexpr int kQrCanvasSize = 432;
+constexpr int kQrQuietZone = 4;
 
 struct QrUi {
     lv_obj_t* canvas = nullptr;
@@ -28,37 +29,69 @@ struct QrUi {
     lv_obj_t* qr_label = nullptr;
     const DeviceConfig* config = nullptr;
     String last_payload;
+    bool qr_rendered = false;
 };
 
-constexpr int kQrVersion = 10;
-constexpr int kQrQuietZone = 4;
+struct QrCapacity {
+    uint8_t version;
+    uint16_t byte_capacity;
+};
 
-void draw_qr(QrUi& ui, const String& payload) {
+constexpr QrCapacity kQrCapacities[] = {
+    {5, 106},
+    {6, 134},
+    {7, 154},
+    {8, 192},
+    {9, 230},
+    {10, 271},
+};
+
+uint8_t select_qr_version(size_t payload_length) {
+    for (const auto& capacity : kQrCapacities) {
+        if (payload_length <= capacity.byte_capacity) {
+            return capacity.version;
+        }
+    }
+    return 0;
+}
+
+bool draw_qr(QrUi& ui, const String& payload) {
     if (!ui.canvas || !ui.canvas_buf) {
-        return;
+        return false;
+    }
+
+    const uint8_t version = select_qr_version(payload.length());
+    if (version == 0) {
+        Serial.printf("[QR] payload too large bytes=%u\n",
+            static_cast<unsigned int>(payload.length()));
+        return false;
     }
 
     QRCode qrcode;
     static std::vector<uint8_t> qrcode_data;
-    size_t buffer_size = qrcode_getBufferSize(kQrVersion);
+    const size_t buffer_size = qrcode_getBufferSize(version);
     if (qrcode_data.size() != buffer_size) {
         qrcode_data.assign(buffer_size, 0);
     }
 
-    qrcode_initText(&qrcode, qrcode_data.data(), kQrVersion, ECC_LOW, payload.c_str());
-
-    int size = qrcode.size;
-    int total_modules = size + kQrQuietZone * 2;
-    int scale = kQrSize / total_modules;
-    if (scale < 1) {
-        scale = 1;
+    if (qrcode_initText(&qrcode, qrcode_data.data(), version, ECC_LOW, payload.c_str()) != 0) {
+        Serial.println("[QR] encoder failed");
+        return false;
     }
-    int drawn_size = total_modules * scale;
-    int offset = (kQrSize - drawn_size) / 2;
+
+    const int size = qrcode.size;
+    const int total_modules = size + kQrQuietZone * 2;
+    const int scale = kQrCanvasSize / total_modules;
+    if (scale < 1) {
+        Serial.println("[QR] canvas too small");
+        return false;
+    }
+    const int drawn_size = total_modules * scale;
+    const int offset = (kQrCanvasSize - drawn_size) / 2;
 
     const lv_color_t white = theme::white();
     const lv_color_t black = theme::black();
-    std::fill_n(ui.canvas_buf, kQrSize * kQrSize, white);
+    std::fill_n(ui.canvas_buf, kQrCanvasSize * kQrCanvasSize, white);
 
     for (int y = 0; y < size; ++y) {
         for (int x = 0; x < size; ++x) {
@@ -66,13 +99,20 @@ void draw_qr(QrUi& ui, const String& payload) {
                 const int pixel_x = offset + (x + kQrQuietZone) * scale;
                 const int pixel_y = offset + (y + kQrQuietZone) * scale;
                 for (int row = 0; row < scale; ++row) {
-                    lv_color_t* destination = ui.canvas_buf + ((pixel_y + row) * kQrSize) + pixel_x;
+                    lv_color_t* destination =
+                        ui.canvas_buf + ((pixel_y + row) * kQrCanvasSize) + pixel_x;
                     std::fill_n(destination, scale, black);
                 }
             }
         }
     }
     lv_obj_invalidate(ui.canvas);
+    Serial.printf("[QR] rendered version=%u modules=%u scale=%d payload_bytes=%u\n",
+        version,
+        static_cast<unsigned int>(size),
+        scale,
+        static_cast<unsigned int>(payload.length()));
+    return true;
 }
 
 void animate_pulse(lv_obj_t* target) {
@@ -95,18 +135,24 @@ void ui_qr_build(lv_obj_t* parent, const DeviceConfig& config, AppState& state) 
     lv_obj_clear_flag(parent, LV_OBJ_FLAG_SCROLLABLE);
 
     ui.qr_box = lv_obj_create(parent);
-    lv_obj_set_size(ui.qr_box, kQrSize, kQrSize);
-    lv_obj_set_style_radius(ui.qr_box, 12, 0);
+    lv_obj_set_size(ui.qr_box, kQrCanvasSize, kQrCanvasSize);
+    lv_obj_set_style_radius(ui.qr_box, 0, 0);
     lv_obj_set_style_bg_color(ui.qr_box, theme::white(), 0);
-    lv_obj_set_style_border_color(ui.qr_box, theme::maroon(), 0);
-    lv_obj_set_style_border_width(ui.qr_box, 2, 0);
+    lv_obj_set_style_border_width(ui.qr_box, 0, 0);
+    lv_obj_set_style_pad_all(ui.qr_box, 0, 0);
     lv_obj_clear_flag(ui.qr_box, LV_OBJ_FLAG_SCROLLABLE);
 
     ui.canvas_buf = static_cast<lv_color_t*>(heap_caps_malloc(
-        kQrSize * kQrSize * sizeof(lv_color_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+        kQrCanvasSize * kQrCanvasSize * sizeof(lv_color_t),
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
     if (ui.canvas_buf) {
         ui.canvas = lv_canvas_create(ui.qr_box);
-        lv_canvas_set_buffer(ui.canvas, ui.canvas_buf, kQrSize, kQrSize, LV_IMG_CF_TRUE_COLOR);
+        lv_canvas_set_buffer(
+            ui.canvas,
+            ui.canvas_buf,
+            kQrCanvasSize,
+            kQrCanvasSize,
+            LV_IMG_CF_TRUE_COLOR);
         lv_obj_center(ui.canvas);
         lv_canvas_fill_bg(ui.canvas, theme::white(), LV_OPA_COVER);
     }
@@ -185,17 +231,28 @@ void ui_qr_build(lv_obj_t* parent, const DeviceConfig& config, AppState& state) 
         String payload = service_qr_payload();
         bool has_payload = payload.length() > 0;
         if (ui_ptr->qr_label) {
-            lv_label_set_text(ui_ptr->qr_label, has_payload ? "" : "Waiting for QR");
+            lv_label_set_text(
+                ui_ptr->qr_label,
+                has_payload
+                    ? (ui_ptr->qr_rendered ? "" : "QR unavailable")
+                    : "Waiting for QR");
         }
 
         if (has_payload && payload != ui_ptr->last_payload) {
             ui_ptr->last_payload = payload;
-            draw_qr(*ui_ptr, payload);
-            animate_pulse(ui_ptr->qr_box);
+            ui_ptr->qr_rendered = draw_qr(*ui_ptr, payload);
+            if (ui_ptr->qr_rendered) {
+                animate_pulse(ui_ptr->qr_box);
+            }
+            if (ui_ptr->qr_label) {
+                lv_label_set_text(
+                    ui_ptr->qr_label,
+                    ui_ptr->qr_rendered ? "" : "QR unavailable");
+            }
         }
 
         if (ui_ptr->canvas) {
-            if (has_payload) {
+            if (has_payload && ui_ptr->qr_rendered) {
                 lv_obj_clear_flag(ui_ptr->canvas, LV_OBJ_FLAG_HIDDEN);
             } else {
                 lv_obj_add_flag(ui_ptr->canvas, LV_OBJ_FLAG_HIDDEN);

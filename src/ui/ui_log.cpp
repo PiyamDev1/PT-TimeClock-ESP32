@@ -61,18 +61,19 @@ void ui_log_build(lv_obj_t* parent, const DeviceConfig& config, AppState& state)
 
         for (uint16_t i = 0; i < count; ++i) {
             uint32_t ts = 0;
-            String msg;
-            if (service_log_get(i, ts, msg)) {
-                char buf[32];
+            String user;
+            String action;
+            if (service_log_get_activity(i, ts, user, action)) {
+                char buf[40];
                 time_t ts_time = static_cast<time_t>(ts);
                 struct tm* tm_info = localtime(&ts_time);
                 if (tm_info) {
-                    strftime(buf, sizeof(buf), "%H:%M", tm_info);
+                    strftime(buf, sizeof(buf), "%d/%m/%Y %H:%M", tm_info);
                 } else {
-                    strncpy(buf, "--:--", sizeof(buf));
+                    strncpy(buf, "--/--/---- --:--", sizeof(buf));
                     buf[sizeof(buf) - 1] = '\0';
                 }
-                String line = String(buf) + " " + msg;
+                String line = user + " - " + buf + " - " + action;
                 lv_obj_t* item = lv_list_add_btn(list_ptr, LV_SYMBOL_OK, line.c_str());
                 animate_fade_in(item, i * 60);
             }
