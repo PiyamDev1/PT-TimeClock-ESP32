@@ -437,7 +437,7 @@ void ui_settings_build(lv_obj_t* parent, DeviceConfig& config, AppState& state) 
             } else {
                 String err = service_http_last_error();
                 if (err.length() == 0) {
-                    lv_label_set_text(ui_ptr->api_value, "Unreachable");
+                    lv_label_set_text(ui_ptr->api_value, "Checking...");
                 } else {
                     lv_label_set_text(ui_ptr->api_value, err.c_str());
                 }

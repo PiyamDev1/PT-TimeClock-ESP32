@@ -430,6 +430,20 @@ void mark_request_failure(DeviceConfig& config, AppState& state, const ServiceRe
         Serial.println("[HTTP] activity route unavailable");
         return;
     }
+    if (result.status_code == 429) {
+        StaticJsonDocument<256> response;
+        uint32_t retry_seconds = config.qr_interval_sec;
+        if (deserializeJson(response, result.body) == DeserializationError::Ok) {
+            retry_seconds = response["retry_after"] | retry_seconds;
+        }
+        g_api_ok = true;
+        g_last_error = "";
+        delay_requests(max<uint32_t>(retry_seconds, 1) * 1000);
+        Serial.printf("[HTTP] %s rate limited retry=%lus\n",
+            request_name(result.kind),
+            static_cast<unsigned long>(retry_seconds));
+        return;
+    }
 
     g_api_ok = false;
     g_last_error = result.status_code > 0
@@ -451,13 +465,6 @@ void mark_request_failure(DeviceConfig& config, AppState& state, const ServiceRe
         g_initial_config_complete = true;
         g_last_config_ms = millis();
         delay_requests(kConfigIntervalMs);
-    } else if (result.status_code == 429) {
-        StaticJsonDocument<256> response;
-        uint32_t retry_seconds = config.qr_interval_sec;
-        if (deserializeJson(response, result.body) == DeserializationError::Ok) {
-            retry_seconds = response["retry_after"] | retry_seconds;
-        }
-        delay_requests(max<uint32_t>(retry_seconds, 1) * 1000);
     } else if (result.status_code <= 0 || result.status_code >= 500) {
         delay_requests(g_failure_backoff_ms);
         g_failure_backoff_ms = min(g_failure_backoff_ms * 2, kFailureBackoffMaxMs);
